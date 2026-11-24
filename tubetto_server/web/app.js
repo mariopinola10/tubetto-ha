@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.0.9';
+const APP_VERSION = '1.1.0';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 

@@ -1,3 +1,7 @@
+# 1.1.0
+- Nuovo metodo prima di HLS e yt-dlp: stream unico audio+video (come fa l'app sul telefono),
+  da cui ffmpeg estrae l'audio. YouTube non lo interrompe a metà.
+
 # 1.0.9
 - Nuovo logo: medusa stilizzata.
 

@@ -241,7 +241,27 @@ async function fromInnertube(videoId, kind, preferItag) {
         }
       }
 
-      // 2) HLS (es. client IOS): convertito al volo da ffmpeg
+      // 2) stream unico audio+video (es. itag 18): YouTube non lo interrompe; ffmpeg ne estrae l'audio
+      if (kind === 'audio') {
+        const mux = pickMuxed(sd.formats || []);
+        if (mux) {
+          const clen = Number(mux.contentLength) || 0;
+          const points = clen ? [0, Math.floor(clen / 2), Math.max(0, clen - 4096)] : [0];
+          let failed = 0;
+          for (const at of points) {
+            const probe = await fetch(`${mux.url}&range=${at}-${at + 1023}`, { headers: { 'User-Agent': client.userAgent }, signal: AbortSignal.timeout(10000) });
+            await probe.arrayBuffer().catch(() => null);
+            if (!probe.ok) { failed = probe.status; break; }
+          }
+          if (!failed) {
+            preferred = key;
+            return { hls: true, url: mux.url, ua: client.userAgent, mime: 'audio/aac', via: 'innertube:' + key + ':muxed', ...meta };
+          }
+          errors.push(`${key}: stream unico HTTP ${failed}`);
+        }
+      }
+
+      // 3) HLS (es. client IOS): convertito al volo da ffmpeg
       if (sd.hlsManifestUrl) {
         const media = await pickHls(sd.hlsManifestUrl, client.userAgent, kind);
         if (media) {
