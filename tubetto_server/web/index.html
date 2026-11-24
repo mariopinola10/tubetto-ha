@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tubetto</title>
+  <meta name="theme-color" content="#0A84D0">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <img src="icon.svg" alt="" width="32" height="32">
+        <span>Tubetto</span>
+      </div>
+      <nav class="mainnav">
+        <button data-nav="home" class="navbtn active"><span class="ico">⌂</span> Home</button>
+        <button data-nav="search" class="navbtn"><span class="ico">⌕</span> Cerca</button>
+        <button data-nav="library" class="navbtn"><span class="ico">▤</span> La tua libreria</button>
+      </nav>
+      <div class="sidehead">
+        <span>Playlist e artisti</span>
+        <button id="newPlaylistBtn" class="iconbtn" title="Nuova playlist">＋</button>
+      </div>
+      <div id="sideList" class="sidelist"></div>
+      <div class="sidefoot">
+        <button id="syncBtn" class="linkbtn" title="Sincronizza ora">⟳ <span id="syncStatus">Non sincronizzato</span></button>
+        <button id="settingsBtn" class="linkbtn">⚙ Impostazioni</button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <button id="backBtn" class="roundbtn" title="Indietro" disabled>‹</button>
+        <div id="searchBox" class="searchbox hidden">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="Cosa vuoi ascoltare?" autocomplete="off">
+        </div>
+        <div class="spacer"></div>
+        <button id="menuBtn" class="roundbtn mobile-only" title="Menu">☰</button>
+      </header>
+      <div id="view"></div>
+    </main>
+
+    <aside id="videoPanel" class="off">
+      <div class="vp-head">
+        <span id="vpTitle">Video</span>
+        <div>
+          <button id="vpSize" class="iconbtn" title="Ingrandisci">⤢</button>
+          <button id="vpHide" class="iconbtn" title="Nascondi">✕</button>
+        </div>
+      </div>
+      <div class="vp-frame"><video id="media" playsinline preload="auto"></video></div>
+    </aside>
+
+    <footer id="playerbar">
+      <div class="pb-left">
+        <img id="pbThumb" alt="" src="icon.svg">
+        <div class="pb-meta">
+          <div id="pbTitle" class="ellipsis">Niente in riproduzione</div>
+          <button id="pbArtist" class="ellipsis linklike"></button>
+        </div>
+        <button id="pbLike" class="iconbtn like" title="Mi piace">♡</button>
+        <button id="pbOutput" class="iconbtn" title="Dove suonare">🎧</button>
+      </div>
+      <div class="pb-center">
+        <div class="pb-controls">
+          <button id="pbShuffle" class="iconbtn" title="Casuale">🔀</button>
+          <button id="pbPrev" class="iconbtn big" title="Precedente">⏮</button>
+          <button id="pbPlay" class="playbtn" title="Riproduci/Pausa">▶</button>
+          <button id="pbNext" class="iconbtn big" title="Successivo">⏭</button>
+          <button id="pbRepeat" class="iconbtn" title="Ripeti brano">🔁</button>
+        </div>
+        <div class="pb-progress">
+          <span id="pbCur">0:00</span>
+          <input id="pbSeek" type="range" min="0" max="1000" value="0">
+          <span id="pbDur">0:00</span>
+        </div>
+      </div>
+      <div class="pb-right">
+        <button id="pbVideo" class="iconbtn" title="Mostra video">🎬</button>
+        <button id="pbQueue" class="iconbtn" title="Coda">☰</button>
+        <span class="vol">🔊</span>
+        <input id="pbVol" type="range" min="0" max="100" value="80">
+      </div>
+    </footer>
+  </div>
+
+  <div id="queuePanel" class="drawer hidden">
+    <div class="drawer-head"><b>In coda</b><button id="queueClose" class="iconbtn">✕</button></div>
+    <div id="queueList"></div>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
+  <div id="ctxmenu" class="ctxmenu hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

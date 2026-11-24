@@ -1,0 +1,32 @@
+name: Tubetto Server
+version: "1.0.1"
+slug: tubetto
+description: YouTube e YouTube Music in tutta la casa, senza pubblicità, con Music Assistant
+url: https://github.com/mariopinola10/tubetto-ha
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8095
+panel_icon: mdi:play-circle
+panel_title: Tubetto
+homeassistant_api: true
+ports:
+  8095/tcp: 8095
+ports_description:
+  8095/tcp: App Tubetto e browser nella rete di casa (con chiave)
+options:
+  github_repo: mariopinola10/Tubetto
+  github_token: ""
+  audio_quality: high
+  api_key: ""
+  stream_base_url: ""
+schema:
+  github_repo: str
+  github_token: password
+  audio_quality: list(high|medium)
+  api_key: password?
+  stream_base_url: str?
