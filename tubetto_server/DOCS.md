@@ -9,7 +9,7 @@ YouTube e YouTube Music per tutta la casa, senza pubblicità.
 - **audio_quality**: `high` (fino a ~256 kbps) o `medium` (~128 kbps).
 - **api_key**: lascia vuoto, ne viene creata una (la trovi nel Registro dell'add-on).
 - **stream_base_url**: lascia vuoto. Solo se Music Assistant non riesce a leggere gli stream,
-  metti `http://192.168.1.186:8097`.
+  attiva una porta libera in Rete (es. 8789) e metti `http://192.168.1.186:8789`.
 
 ## Uso
 - **Pannello laterale "Tubetto"** in Home Assistant, anche dall'app Home Assistant sul telefono

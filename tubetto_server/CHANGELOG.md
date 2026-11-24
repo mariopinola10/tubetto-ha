@@ -1,3 +1,7 @@
+# 1.0.3
+- Porta di rete di casa disattivata di default (8095 e 8097 sono di Music Assistant):
+  pannello e Music Assistant funzionano senza. Se serve, attivala in Rete con una porta libera.
+
 # 1.0.2
 - Porta cambiata: la 8095 è già usata da Music Assistant. Ora interna 8099, in rete di casa 8097.
 

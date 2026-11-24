@@ -1,5 +1,5 @@
 name: Tubetto Server
-version: "1.0.2"
+version: "1.0.3"
 slug: tubetto
 description: YouTube e YouTube Music in tutta la casa, senza pubblicità, con Music Assistant
 url: https://github.com/mariopinola10/tubetto-ha
@@ -15,9 +15,9 @@ panel_icon: mdi:play-circle
 panel_title: Tubetto
 homeassistant_api: true
 ports:
-  8099/tcp: 8097
+  8099/tcp: null
 ports_description:
-  8099/tcp: App Tubetto e browser nella rete di casa (con chiave)
+  8099/tcp: Facoltativa: accesso diretto dalla rete di casa (con chiave). Disattivata: si usa il pannello di HA
 options:
   github_repo: mariopinola10/Tubetto
   github_token: ""
