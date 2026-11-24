@@ -11,10 +11,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { OPS, TTL, related, dedupeSongs, setWebClients } from './yt.mjs';
-import { resolve, applyConfig, getStats, setQuality } from './resolver.mjs';
+import { resolve, applyConfig, getStats, setQuality, reportBroken } from './resolver.mjs';
 import * as house from './house.mjs';
 
-const VERSION = '1.0.4';
+const VERSION = '1.0.5';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -158,7 +158,7 @@ async function proxy(req, res, videoId, kind) {
   res.on('close', () => ac.abort());
   const CHUNK = 1024 * 1024;
   let pos = start;
-  let retried = false;
+  let retries = 0;
   while (pos <= end && !res.destroyed) {
     const to = Math.min(pos + CHUNK - 1, end);
     let r;
@@ -169,13 +169,15 @@ async function proxy(req, res, videoId, kind) {
     }
     if (!r.ok) {
       await r.arrayBuffer().catch(() => null);
-      if (retried) { log('[stream] interrotto', videoId, 'HTTP', r.status); break; }
-      retried = true;
-      try { src = await resolve(videoId, kind, true, src.itag); } catch (e) { break; }
-      if (src.clen !== total) { log('[stream] formato cambiato, interrompo', videoId); break; }
+      // link interrotto: escludo quel client e riprendo dallo stesso punto con un altro
+      reportBroken(videoId, kind, src.via);
+      if (++retries > 3) { log('[stream] interrotto', videoId, 'HTTP', r.status, 'via', src.via); break; }
+      try { src = await resolve(videoId, kind, true, src.itag); } catch (e) { log('[stream] nessun altro metodo per', videoId, e.message); break; }
+      if (src.clen !== total) { log('[stream] formato diverso da', src.via, ', interrompo', videoId); break; }
+      log('[stream] riprendo', videoId, 'da', pos, 'via', src.via);
       continue;
     }
-    retried = false;
+    retries = 0;
     try {
       for await (const chunk of r.body) {
         if (res.destroyed) break;

@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.5';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1053,7 +1053,7 @@ function openSettings() {
       `Brani avviati: ${s.ok || 0} • falliti: ${s.fail || 0}` + (s.consecutiveFail ? ` (di fila: ${s.consecutiveFail})` : ''),
       s.lastOk ? 'Ultimo ok: ' + s.lastOk : '',
       s.lastError ? 'Ultimo errore: ' + s.lastError : '',
-      `Ordine client: ${(s.order || []).join(' → ')}`,
+      `Ordine client: ${(s.order || []).join(' → ')}` + ((s.excluded || []).length ? ` (esclusi: ${s.excluded.join(', ')})` : ''),
       `Stream per Music Assistant: ${st.streamBase}`,
     ].filter(Boolean).join('\n');
   }).catch((e) => { $('#testResult').textContent = '❌ ' + e.message; });

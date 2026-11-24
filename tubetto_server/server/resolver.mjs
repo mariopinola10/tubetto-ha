@@ -29,10 +29,15 @@ let preferred = null;
 let audioMaxKbps = 320;
 
 const cache = new Map();
+/** Client che danno link "a metà" (403 dopo i primi byte, es. IOS senza PO token): esclusi per un po'. */
+const bad = new Map();
+const BAD_MS = 6 * 3600 * 1000;
 const stats = { ok: 0, fail: 0, consecutiveFail: 0, lastError: '', lastOk: '', via: {} };
 
 export function getStats() {
-  return { ...stats, order: [...order], versions: Object.fromEntries(Object.entries(clients).map(([k, c]) => [k, c.version])) };
+  const now = Date.now();
+  const excluded = [...bad.entries()].filter(([, t]) => t > now).map(([k]) => k);
+  return { ...stats, order: [...order], excluded, versions: Object.fromEntries(Object.entries(clients).map(([k, c]) => [k, c.version])) };
 }
 
 export function setQuality(q) {
@@ -124,7 +129,10 @@ async function contentLength(url, ua) {
 
 async function fromInnertube(videoId, kind, preferItag) {
   const errors = [];
-  const list = [...order].sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : 0));
+  const now = Date.now();
+  let list = [...order].sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : 0));
+  const usable = list.filter((k) => !(bad.get(k) > now));
+  if (usable.length) list = usable;
   for (const key of list) {
     const client = clients[key];
     if (!client) continue;
@@ -142,11 +150,18 @@ async function fromInnertube(videoId, kind, preferItag) {
         continue;
       }
       const clen = Number(f.contentLength) || (await contentLength(f.url, client.userAgent));
-      // verifica che il link risponda davvero
-      const probe = await fetch(`${f.url}&range=0-1023`, { headers: { 'User-Agent': client.userAgent }, signal: AbortSignal.timeout(10000) });
-      await probe.arrayBuffer().catch(() => null);
-      if (!probe.ok) {
-        errors.push(`${key}: stream HTTP ${probe.status}`);
+      // verifica che il link risponda davvero: all'inizio, a metà e verso la fine
+      // (alcuni client danno solo i primi byte e poi 403)
+      const points = [0, Math.floor(clen / 2), Math.max(0, clen - 4096)].filter((v, i, a) => a.indexOf(v) === i);
+      let failed = 0;
+      for (const at of points) {
+        const probe = await fetch(`${f.url}&range=${at}-${at + 1023}`, { headers: { 'User-Agent': client.userAgent }, signal: AbortSignal.timeout(10000) });
+        await probe.arrayBuffer().catch(() => null);
+        if (!probe.ok) { failed = probe.status; break; }
+      }
+      if (failed) {
+        errors.push(`${key}: stream HTTP ${failed}`);
+        markBad(key);
         continue;
       }
       preferred = key;
@@ -193,6 +208,19 @@ async function fromYtdlp(videoId, kind) {
   const clen = f.filesize || (await contentLength(f.url, ua));
   const mime = kind === 'video' ? 'video/mp4' : f.ext === 'm4a' ? 'audio/mp4' : f.ext === 'webm' ? 'audio/webm' : 'audio/mpeg';
   return { url: f.url, ua, clen, itag: Number(f.format_id) || 0, mime, via: 'yt-dlp', title: j.title || '', author: j.uploader || j.channel || '', lengthSeconds: j.duration || 0 };
+}
+
+function markBad(key) {
+  if (!(bad.get(key) > Date.now())) console.log(`[stream] client ${key} escluso per 6 ore (link interrotti)`);
+  bad.set(key, Date.now() + BAD_MS);
+  if (preferred === key) preferred = null;
+}
+
+/** Il link si è interrotto durante la riproduzione: escludo quel client e svuoto la cache del brano. */
+export function reportBroken(videoId, kind, via) {
+  const key = String(via || '').replace('innertube:', '');
+  if (clients[key]) markBad(key);
+  cache.delete(kind + ':' + videoId);
 }
 
 /**

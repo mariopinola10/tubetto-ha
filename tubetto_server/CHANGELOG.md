@@ -1,3 +1,7 @@
+# 1.0.5
+- Corretto: brani che si fermavano subito (HTTP 403). Il client IOS dà link validi solo per i primi byte:
+  ora ogni link viene verificato anche a metà e alla fine, e se si interrompe si riprende dallo stesso punto con un altro client.
+
 # 1.0.4
 - Corretto config.yaml (testo non valido che nascondeva l'app nello store).
 
