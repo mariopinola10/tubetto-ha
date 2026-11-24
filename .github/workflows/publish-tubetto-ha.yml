@@ -1,0 +1,44 @@
+# Carica nella root del repo tubetto-ha-X.Y.Z.zip: questo workflow estrae la versione più alta
+# nel repository, così Home Assistant vede l'aggiornamento dell'add-on.
+name: Pubblica add-on Tubetto
+
+on:
+  push:
+    paths:
+      - 'tubetto-ha-*.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pubblica-tubetto-ha
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Estrai lo zip con la versione più alta
+        run: |
+          set -e
+          ZIP=$(ls tubetto-ha-*.zip | sort -V | tail -n1)
+          echo "Pubblico $ZIP"
+          rm -rf _x && mkdir _x && unzip -q "$ZIP" -d _x
+          SRC=$(dirname "$(find _x -name repository.yaml | head -1)")
+          rm -rf tubetto_server
+          cp -r "$SRC/tubetto_server" .
+          cp "$SRC/repository.yaml" "$SRC/README.md" .
+          rm -rf _x
+          echo "## Pubblicato $ZIP" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Salva
+        run: |
+          git config user.name "tubetto-pubblica"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A tubetto_server repository.yaml README.md
+          if git diff --cached --quiet; then echo "Nessuna modifica"; exit 0; fi
+          git commit -m "Add-on Tubetto Server $(grep '^version' tubetto_server/config.yaml | cut -d'"' -f2)"
+          git push
