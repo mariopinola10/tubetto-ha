@@ -1,3 +1,6 @@
+# 1.0.4
+- Corretto config.yaml (testo non valido che nascondeva l'app nello store).
+
 # 1.0.3
 - Porta di rete di casa disattivata di default (8095 e 8097 sono di Music Assistant):
   pannello e Music Assistant funzionano senza. Se serve, attivala in Rete con una porta libera.
