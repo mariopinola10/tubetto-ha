@@ -1,3 +1,9 @@
+# 1.0.9
+- Nuovo logo: medusa stilizzata.
+
+# 1.0.8
+- Copertine mancanti: al loro posto un disegno (nota musicale) invece dell'icona di immagine rotta.
+
 # 1.0.7
 - "Dimostra di non essere un bot": generatore di PO token (bgutil) integrato e yt-dlp con runtime JavaScript.
   Quando YouTube blocca le richieste dirette, si passa in automatico a yt-dlp + PO token.

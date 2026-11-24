@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.0.7';
+const APP_VERSION = '1.0.9';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -454,9 +454,12 @@ function collageThumbs(id) {
   return [...new Set(songs.map(cover).filter(Boolean))].slice(0, 4);
 }
 
+/** Se un'immagine non si carica, al suo posto un disegno (nota musicale su sfumatura). */
+const IMG_FALLBACK = `onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'tile pl',textContent:'♫'}))"`;
+
 function collageHTML(thumbs, cls = '') {
-  if (thumbs.length >= 4) return `<div class="collage ${cls}">${thumbs.map((t) => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>`;
-  return `<img class="${cls}" loading="lazy" src="${esc(thumbs[0])}" alt="">`;
+  if (thumbs.length >= 4) return `<div class="collage ${cls}">${thumbs.map((t) => `<img loading="lazy" src="${esc(t)}" alt="" ${IMG_FALLBACK}>`).join('')}</div>`;
+  return `<img class="${cls}" loading="lazy" src="${esc(thumbs[0])}" alt="" ${IMG_FALLBACK}>`;
 }
 
 function imgHTML(v) {
@@ -506,7 +509,7 @@ function tracksHTML(items, opts = {}) {
   return `<div class="tracks">${items.map((v, i) => `
     <div class="track ${cur && cur.id === v.id ? 'playing' : ''}" data-list="${id}" data-idx="${i}" data-vid="${esc(v.id)}">
       <span class="n">${i + 1}</span>
-      <img loading="lazy" src="${esc(thumbOf(v))}" alt="" onerror="this.style.visibility='hidden'">
+      <img loading="lazy" src="${esc(thumbOf(v))}" alt="" ${IMG_FALLBACK}>
       <div class="ellipsis"><div class="tt ellipsis">${esc(v.title)}</div><div class="ta ellipsis">${esc(v.author)}</div></div>
       <span class="td">${esc(v.duration || '')}</span>
       <button class="iconbtn like ${isFav(v.id) ? 'on' : ''}" data-act="like" data-vid="${esc(v.id)}" title="Mi piace">${isFav(v.id) ? '♥' : '♡'}</button>
@@ -1312,7 +1315,7 @@ function renderQueue() {
   box.innerHTML = pl.queue.map((v, i) => `
     <div class="track ${i === pl.idx ? 'playing' : ''}" data-q="${i}">
       <span class="n">${i === pl.idx ? '▶' : i + 1}</span>
-      <img loading="lazy" src="${esc(thumbOf(v))}" alt="">
+      <img loading="lazy" src="${esc(thumbOf(v))}" alt="" ${IMG_FALLBACK}>
       <div class="ellipsis"><div class="tt ellipsis">${esc(v.title)}</div><div class="ta ellipsis">${esc(v.author)}</div></div>
       <button class="iconbtn" data-qrm="${i}" title="Rimuovi">✕</button>
     </div>`).join('') || '<div class="empty">La coda è vuota</div>';
