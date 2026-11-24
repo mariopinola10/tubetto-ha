@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1130,8 +1130,27 @@ function refreshPlayButton() {
   document.title = (playing ? '▶ ' : '') + (v ? v.title + ' — Tubetto' : 'Tubetto');
 }
 
-function srcFor(v, kind) {
-  return `${kind === 'video' ? 'video' : 'stream'}/${encodeURIComponent(v.id)}${keyQs()}`;
+function srcFor(v, kind, t = 0) {
+  const q = new URLSearchParams();
+  if (cfg.key) q.set('key', cfg.key);
+  if (t > 0) q.set('t', String(Math.floor(t)));
+  const qs = q.toString();
+  return `${kind === 'video' ? 'video' : 'stream'}/${encodeURIComponent(v.id)}${qs ? '?' + qs : ''}`;
+}
+
+/** Durata dal testo "3:21" (per gli stream HLS il browser non la conosce). */
+function itemSeconds(v) {
+  const p = String((v && v.duration) || '').split(':').map(Number);
+  if (!p.length || p.some((x) => Number.isNaN(x))) return 0;
+  return p.reduce((a, x) => a * 60 + x, 0);
+}
+
+/** Posizione e durata reali, anche per gli stream HLS (che ripartono da un punto: pl.offset). */
+function localTimes() {
+  const m = media();
+  const v = currentItem();
+  if (isFinite(m.duration) && m.duration > 0) return { c: m.currentTime || 0, d: m.duration, live: false };
+  return { c: (pl.offset || 0) + (m.currentTime || 0), d: itemSeconds(v), live: true };
 }
 
 function playQueue(items, idx, music = true) {
@@ -1150,6 +1169,7 @@ function playCurrent() {
   if (isHouse()) return houseSend();
   pl.recorded = false;
   pl.retried = false;
+  pl.offset = 0;
   const m = media();
   m.src = srcFor(v, pl.music ? 'audio' : 'video');
   m.play().catch(() => { /* serve un tocco dell'utente */ });
@@ -1169,7 +1189,7 @@ function onMediaError() {
   }
   if (!pl.retried) {
     pl.retried = true;
-    m.src = srcFor(v, 'audio') + (keyQs() ? '&' : '?') + 'r=' + Date.now();
+    m.src = srcFor(v, 'audio', pl.offset || 0);
     m.play().catch(() => null);
     return;
   }
@@ -1208,7 +1228,7 @@ function next(auto = false) {
 function prev() {
   if (!pl.queue.length) return;
   if (isHouse()) return houseCmd('previous');
-  if (media().currentTime > 4) { media().currentTime = 0; return; }
+  if (localTimes().c > 4) { seekTo(0); return; }
   if (pl.idx > 0) {
     pl.idx--;
     playCurrent();
@@ -1307,7 +1327,14 @@ function seekTo(fraction) {
     return;
   }
   const m = media();
-  if (m.duration) m.currentTime = fraction * m.duration;
+  const t = localTimes();
+  if (!t.live) { m.currentTime = fraction * t.d; return; }
+  // stream HLS: si riparte dal punto scelto
+  const v = currentItem();
+  if (!v || !t.d) return;
+  pl.offset = Math.floor(fraction * t.d);
+  m.src = srcFor(v, pl.music ? 'audio' : 'video', pl.offset);
+  m.play().catch(() => null);
 }
 
 function setVolume(v) {
@@ -1331,9 +1358,9 @@ setInterval(() => {
       c = Math.min(c, d || c);
     }
   } else {
-    const m = media();
-    c = m.currentTime || 0;
-    d = isFinite(m.duration) ? m.duration : 0;
+    const t = localTimes();
+    c = t.c;
+    d = t.d;
   }
   $('#pbCur').textContent = fmtTime(c);
   $('#pbDur').textContent = fmtTime(d);

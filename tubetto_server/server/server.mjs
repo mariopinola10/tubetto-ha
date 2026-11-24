@@ -9,12 +9,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { OPS, TTL, related, dedupeSongs, setWebClients } from './yt.mjs';
 import { resolve, applyConfig, getStats, setQuality, reportBroken } from './resolver.mjs';
 import * as house from './house.mjs';
 
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -120,7 +120,36 @@ function waitDrain(res) {
   });
 }
 
-async function proxy(req, res, videoId, kind) {
+/** Stream HLS convertito da ffmpeg in un flusso continuo (AAC per l'audio, MP4 frammentato per il video). */
+function proxyHls(req, res, src, kind, startAt) {
+  const headers = {
+    'Content-Type': kind === 'video' ? 'video/mp4' : 'audio/aac',
+    'Cache-Control': 'no-store',
+    'Accept-Ranges': 'none',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': 'X-Tubetto-Duration, X-Tubetto-Offset',
+    'X-Tubetto-Duration': String(src.lengthSeconds || 0),
+    'X-Tubetto-Offset': String(startAt || 0),
+  };
+  res.writeHead(200, headers);
+  if (req.method === 'HEAD') return res.end();
+  const args = ['-nostdin', '-loglevel', 'error', '-user_agent', src.ua, '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5'];
+  if (startAt > 0) args.push('-ss', String(startAt));
+  args.push('-i', src.url);
+  if (kind === 'video') args.push('-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1');
+  else args.push('-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1');
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = '';
+  ff.stderr.on('data', (d) => { err = (err + d).slice(-600); });
+  ff.stdout.pipe(res);
+  res.on('close', () => ff.kill('SIGKILL'));
+  ff.on('close', (code) => {
+    if (code && !res.destroyed) log('[stream] ffmpeg terminato con codice', code, err.trim().split('\n').pop());
+    res.end();
+  });
+}
+
+async function proxy(req, res, videoId, kind, startAt = 0) {
   let src;
   try {
     src = await resolve(videoId, kind, false);
@@ -128,6 +157,7 @@ async function proxy(req, res, videoId, kind) {
     if (kind === 'video') return sendJson(res, 404, { error: 'Video non disponibile: ' + e.message });
     return sendJson(res, 502, { error: e.message });
   }
+  if (src.hls) return proxyHls(req, res, src, kind, startAt);
   const total = src.clen;
   let start = 0, end = total - 1, status = 200;
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -149,6 +179,7 @@ async function proxy(req, res, videoId, kind) {
     'Content-Length': end - start + 1,
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
+    'X-Tubetto-Duration': String(src.lengthSeconds || 0),
   };
   if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
   res.writeHead(status, headers);
@@ -173,6 +204,7 @@ async function proxy(req, res, videoId, kind) {
       reportBroken(videoId, kind, src.via);
       if (++retries > 3) { log('[stream] interrotto', videoId, 'HTTP', r.status, 'via', src.via); break; }
       try { src = await resolve(videoId, kind, true, src.itag); } catch (e) { log('[stream] nessun altro metodo per', videoId, e.message); break; }
+      if (src.hls) { log('[stream] il resto del brano', videoId, 'arriva solo in HLS: ricarica per continuare'); break; }
       if (src.clen !== total) { log('[stream] formato diverso da', src.via, ', interrompo', videoId); break; }
       log('[stream] riprendo', videoId, 'da', pos, 'via', src.via);
       continue;
@@ -229,7 +261,7 @@ const server = http.createServer(async (req, res) => {
     if (sm) {
       const [, kind, id] = sm;
       if (!authorized(req, url) && url.searchParams.get('k') !== sign(id)) return sendJson(res, 401, { error: 'Non autorizzato' });
-      return await proxy(req, res, id, kind === 'video' ? 'video' : 'audio');
+      return await proxy(req, res, id, kind === 'video' ? 'video' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
 
     if (p.startsWith('/api/')) {

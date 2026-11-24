@@ -1,3 +1,8 @@
+# 1.0.6
+- Se YouTube blocca i link diretti ("conferma di non essere un bot" o 403 a metà brano) usa gli stream HLS,
+  convertiti al volo da ffmpeg: funzionano anche nel browser e in Music Assistant.
+- Identità anonima (visitorData) come un browser vero: meno blocchi "bot".
+
 # 1.0.5
 - Corretto: brani che si fermavano subito (HTTP 403). Il client IOS dà link validi solo per i primi byte:
   ora ogni link viene verificato anche a metà e alla fine, e se si interrompe si riprende dallo stesso punto con un altro client.
