@@ -14,8 +14,8 @@ import { OPS, TTL, related, dedupeSongs, setWebClients } from './yt.mjs';
 import { resolve, applyConfig, getStats, setQuality } from './resolver.mjs';
 import * as house from './house.mjs';
 
-const VERSION = '1.0.1';
-const PORT = 8095;
+const VERSION = '1.0.2';
+const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
 
