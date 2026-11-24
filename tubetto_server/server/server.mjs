@@ -11,10 +11,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { OPS, TTL, related, dedupeSongs, setWebClients } from './yt.mjs';
-import { resolve, applyConfig, getStats, setQuality, reportBroken } from './resolver.mjs';
+import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } from './resolver.mjs';
 import * as house from './house.mjs';
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -65,7 +65,7 @@ async function refreshConfig() {
 }
 
 function updateYtdlp() {
-  execFile('/opt/ytdlp/bin/pip', ['install', '-q', '-U', 'yt-dlp'], { timeout: 180000 }, (err) => {
+  execFile('/opt/ytdlp/bin/pip', ['install', '-q', '-U', 'yt-dlp[default]', 'bgutil-ytdlp-pot-provider'], { timeout: 300000 }, (err) => {
     log(err ? '[yt-dlp] aggiornamento non riuscito' : '[yt-dlp] aggiornato');
   });
 }
@@ -226,6 +226,7 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
 // ------------------------------------------------------------------ cache API
 
 const apiCache = new Map();
+let houseIds = [];
 
 async function runOp(op, params) {
   const key = op + '?' + params.toString();
@@ -261,6 +262,9 @@ const server = http.createServer(async (req, res) => {
     if (sm) {
       const [, kind, id] = sm;
       if (!authorized(req, url) && url.searchParams.get('k') !== sign(id)) return sendJson(res, 401, { error: 'Non autorizzato' });
+      // coda mandata in casa: preparo già il brano dopo
+      const qi = houseIds.indexOf(id);
+      if (qi >= 0 && houseIds[qi + 1]) prefetch(houseIds[qi + 1]);
       return await proxy(req, res, id, kind === 'video' ? 'video' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
 
@@ -272,6 +276,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { server: true, version: VERSION, repo: REPO, token: fromIngress(req) ? TOKEN : '', key: fromIngress(req) ? API_KEY : undefined, port: PORT });
       }
       if (op === 'ping') return sendJson(res, 200, { ok: true, version: VERSION });
+      if (op === 'prefetch') { prefetch(url.searchParams.get('id')); return sendJson(res, 200, { ok: true }); }
       if (op === 'status') return sendJson(res, 200, { version: VERSION, config: configInfo, stream: getStats(), streamBase: STREAM_BASE });
 
       if (op === 'house/players') return sendJson(res, 200, await house.players());
@@ -289,6 +294,8 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
+        houseIds = items.map((x) => x.id);
+        prefetch(houseIds[0]);
         const r = await house.play(players, items.map(streamUrl));
         log('[casa]', players.join(', '), '←', items.length, 'brani');
         return sendJson(res, 200, { ok: true, count: items.length, items, ...r });

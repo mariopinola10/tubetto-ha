@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1054,6 +1054,8 @@ function openSettings() {
       s.lastOk ? 'Ultimo ok: ' + s.lastOk : '',
       s.lastError ? 'Ultimo errore: ' + s.lastError : '',
       `Ordine client: ${(s.order || []).join(' → ')}` + ((s.excluded || []).length ? ` (esclusi: ${s.excluded.join(', ')})` : ''),
+      s.innertubeDown ? 'YouTube blocca le richieste dirette: uso yt-dlp con PO token' : '',
+      s.cookies ? 'Cookie account: attivi' : '',
       `Stream per Music Assistant: ${st.streamBase}`,
     ].filter(Boolean).join('\n');
   }).catch((e) => { $('#testResult').textContent = '❌ ' + e.message; });
@@ -1115,6 +1117,9 @@ function initMedia() {
     if (v && !pl.recorded) {
       pl.recorded = true;
       recordListen(v, pl.music);
+      // prepara già il brano successivo sul server
+      const n = pl.queue[pl.idx + 1];
+      if (n) api('prefetch', { id: n.id }).catch(() => null);
     }
     refreshPlayButton();
   });

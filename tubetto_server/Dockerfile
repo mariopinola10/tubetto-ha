@@ -1,14 +1,20 @@
 ARG BUILD_FROM
 FROM $BUILD_FROM
 
-# Node.js per il server, ffmpeg per gli stream HLS, yt-dlp (in un ambiente Python separato) come metodo di riserva
-RUN apk add --no-cache nodejs python3 py3-pip ca-certificates ffmpeg \
- && python3 -m venv /opt/ytdlp \
- && /opt/ytdlp/bin/pip install --no-cache-dir -U yt-dlp
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
 
-COPY server /app/server
-COPY web /app/web
+# ffmpeg per gli stream HLS; yt-dlp con plugin PO token (bgutil) e runtime JavaScript (node, già presente)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/ytdlp \
+ && /opt/ytdlp/bin/pip install --no-cache-dir -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
+
+COPY server /app/tubetto/server
+COPY web /app/tubetto/web
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
+ENTRYPOINT []
 CMD [ "/run.sh" ]

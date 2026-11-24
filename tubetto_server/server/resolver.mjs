@@ -4,6 +4,11 @@
  * poi yt-dlp come riserva. Risultati in cache finché il link non scade.
  */
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+
+const COOKIES = '/share/tubetto/cookies.txt';
+/** Se InnerTube diretto è bloccato ("bot"), per un po' si va subito con yt-dlp + PO token. */
+let innertubeDownUntil = 0;
 
 const YT = 'https://www.youtube.com';
 
@@ -34,10 +39,21 @@ const bad = new Map();
 const BAD_MS = 6 * 3600 * 1000;
 const stats = { ok: 0, fail: 0, consecutiveFail: 0, lastError: '', lastOk: '', via: {} };
 
+const pending = new Map();
+
+/** Prepara in anticipo il prossimo brano (yt-dlp sul Raspberry impiega qualche secondo). */
+export function prefetch(videoId) {
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || '') || pending.has(videoId)) return;
+  const c = cache.get('audio:' + videoId);
+  if (c && Date.now() < c.expires) return;
+  const p = resolve(videoId, 'audio').catch(() => null).finally(() => pending.delete(videoId));
+  pending.set(videoId, p);
+}
+
 export function getStats() {
   const now = Date.now();
   const excluded = [...bad.entries()].filter(([, t]) => t > now).map(([k]) => k);
-  return { ...stats, order: [...order], excluded, versions: Object.fromEntries(Object.entries(clients).map(([k, c]) => [k, c.version])) };
+  return { ...stats, order: [...order], excluded, innertubeDown: innertubeDownUntil > now, cookies: fs.existsSync(COOKIES), versions: Object.fromEntries(Object.entries(clients).map(([k, c]) => [k, c.version])) };
 }
 
 export function setQuality(q) {
@@ -243,11 +259,17 @@ async function fromInnertube(videoId, kind, preferItag) {
 
 function ytdlpJson(videoId) {
   return new Promise((resolve, reject) => {
-    execFile('/opt/ytdlp/bin/yt-dlp', [
+    const args = [
       '-J', '--no-warnings', '--no-playlist',
-      '--extractor-args', 'youtube:player_client=ios,android_vr,web_safari',
-      'https://www.youtube.com/watch?v=' + videoId,
-    ], { timeout: 60000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=default,mweb',
+    ];
+    // facoltativo: cookie di un account YouTube in /share/tubetto/cookies.txt (copiati, l'originale non viene toccato)
+    if (fs.existsSync(COOKIES)) {
+      try { fs.copyFileSync(COOKIES, '/tmp/yt-cookies.txt'); args.push('--cookies', '/tmp/yt-cookies.txt'); } catch (e) { /* senza cookie */ }
+    }
+    args.push('https://www.youtube.com/watch?v=' + videoId);
+    execFile('/opt/ytdlp/bin/yt-dlp', args, { timeout: 90000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error('yt-dlp: ' + (stderr || err.message).split('\n').filter(Boolean).pop()));
       try { resolve(JSON.parse(stdout)); } catch (e) { reject(new Error('yt-dlp: risposta non valida')); }
     });
@@ -309,8 +331,10 @@ export async function resolve(videoId, kind = 'audio', force = false, preferItag
   if (!force && c && Date.now() < c.expires) return c.src;
   let src;
   try {
+    if (Date.now() < innertubeDownUntil) throw new Error('InnerTube diretto bloccato da poco: uso yt-dlp con PO token');
     src = await fromInnertube(videoId, kind, preferItag || (c && c.src.itag));
   } catch (e1) {
+    if (Date.now() >= innertubeDownUntil) innertubeDownUntil = Date.now() + 30 * 60000;
     try {
       src = await fromYtdlp(videoId, kind);
     } catch (e2) {

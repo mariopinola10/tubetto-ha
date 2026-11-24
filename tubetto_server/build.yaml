@@ -1,3 +1,5 @@
+# Base: immagine ufficiale del generatore di PO token (bgutil, Node.js + Debian, amd64/arm64).
+# Serve a dimostrare a YouTube che non siamo un bot, come fa yt-dlp.
 build_from:
-  aarch64: ghcr.io/home-assistant/aarch64-base:3.20
-  amd64: ghcr.io/home-assistant/amd64-base:3.20
+  aarch64: brainicism/bgutil-ytdlp-pot-provider:latest
+  amd64: brainicism/bgutil-ytdlp-pot-provider:latest
