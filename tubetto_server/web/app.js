@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -554,7 +554,87 @@ const VIEWS = {
 
 function greeting() {
   const h = new Date().getHours();
-  return h < 6 ? 'Buonanotte' : h < 13 ? 'Buongiorno' : h < 18 ? 'Buon pomeriggio' : 'Buonasera';
+  const g = h < 6 ? 'Buonanotte' : h < 13 ? 'Buongiorno' : h < 18 ? 'Buon pomeriggio' : 'Buonasera';
+  return profile.name ? g + ' ' + profile.name : g;
+}
+
+// ============================================================ Profilo (come nell'app: nome, artisti e generi)
+
+const GENRES = [
+  ['Pop italiano', 'pop italiano successi'], ['Rap italiano', 'rap italiano hit'], ['Musica napoletana', 'musica napoletana'],
+  ['Cantautori', 'cantautori italiani'], ['Rock', 'rock classici'], ['Pop internazionale', 'pop hits'],
+  ['Dance / Elettronica', 'dance hits'], ['Anni 80', 'hit anni 80'], ['Anni 90', 'hit anni 90'],
+  ['R&B / Soul', 'rnb soul hits'], ['Latino / Reggaeton', 'reggaeton hits'], ['Indie', 'indie italiano'],
+  ['Jazz', 'jazz classics'], ['Classica', 'musica classica famosa'], ['Relax / Lo-fi', 'lofi relax'],
+];
+const SUGGESTED_ARTISTS = ['Pino Daniele', 'Geolier', 'Vasco Rossi', 'Jovanotti', 'Ultimo', 'Annalisa', 'Elodie', 'Mahmood',
+  'Marco Mengoni', 'Laura Pausini', 'Tiziano Ferro', 'Eros Ramazzotti', 'Lucio Dalla', 'Lucio Battisti', 'Sfera Ebbasta', 'Lazza',
+  'Tananai', 'Blanco', 'Måneskin', 'Rocco Hunt', 'Liberato', "Gigi D'Alessio", 'Coldplay', 'Ed Sheeran', 'Dua Lipa',
+  'The Weeknd', 'Taylor Swift', 'Michael Jackson', 'Queen', 'Bruno Mars'];
+
+const profile = LS.get('profile', { name: '', genres: [], done: false });
+const saveProfile = () => LS.set('profile', profile);
+const genreQueries = () => profile.genres.map((g) => (GENRES.find((x) => x[0] === g) || [])[1]).filter(Boolean);
+
+function openProfile(first = false) {
+  const followed = lib.artists.map((a) => a.id);
+  const names = [...SUGGESTED_ARTISTS, ...followed.filter((f) => !SUGGESTED_ARTISTS.some((a) => a.toLowerCase() === f.toLowerCase()))];
+  const isOn = (n) => followed.some((f) => f.toLowerCase() === n.toLowerCase());
+  $('#modalBox').innerHTML = `
+    <h3>${first ? 'Benvenuto in Tubetto 🎧' : 'Profilo e gusti musicali'}</h3>
+    <div class="hint">Scegli qualche artista e genere: la Home partirà già con la musica che ti piace.</div>
+    <label>Come ti chiami?</label>
+    <input type="text" id="prName" value="${esc(profile.name)}" placeholder="Il tuo nome">
+    <label>Artisti: scegline almeno 3</label>
+    <div class="chips" id="prArtists">${names.map((n) => `<button class="chip ${isOn(n) ? 'active' : ''}" data-a="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <div class="row-add"><input type="text" id="prOther" placeholder="Altro artista…"><button class="secondary" id="prAdd">Aggiungi</button></div>
+    <label>Generi</label>
+    <div class="chips" id="prGenres">${GENRES.map(([g]) => `<button class="chip ${profile.genres.includes(g) ? 'active' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')}</div>
+    <div class="btns">
+      <button class="secondary" id="prSkip">${first ? 'Salta' : 'Annulla'}</button>
+      <button class="primary" id="prSave">${first ? 'Inizia' : 'Salva'}</button>
+    </div>`;
+  $('#modal').classList.remove('hidden');
+  $('#modalBox').querySelectorAll('.chips').forEach((box) => box.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (b) b.classList.toggle('active');
+  }));
+  const addOther = () => {
+    const n = $('#prOther').value.trim();
+    if (!n) return;
+    $('#prArtists').insertAdjacentHTML('beforeend', `<button class="chip active" data-a="${esc(n)}">${esc(n)}</button>`);
+    $('#prOther').value = '';
+  };
+  $('#prAdd').onclick = addOther;
+  $('#prOther').onkeydown = (e) => { if (e.key === 'Enter') addOther(); };
+  $('#prSkip').onclick = () => { if (first) { profile.done = true; saveProfile(); } closeModal(); };
+  $('#prSave').onclick = () => {
+    const name = $('#prName').value.trim();
+    const artists = $$('#prArtists .chip.active').map((b) => b.dataset.a);
+    if (!name) { toast('Scrivi il tuo nome'); $('#prName').focus(); return; }
+    if (artists.length < 3) { toast('Scegli almeno 3 artisti'); return; }
+    profile.name = name;
+    profile.genres = $$('#prGenres .chip.active').map((b) => b.dataset.g);
+    profile.done = true;
+    saveProfile();
+    artists.filter((a) => !isArtistFollowed(a)).forEach((a) => toggleArtist(a, '', ''));
+    if (!first) followed.filter((f) => !artists.some((a) => a.toLowerCase() === f.toLowerCase())).forEach((f) => { if (isArtistFollowed(f)) toggleArtist(f, '', ''); });
+    closeModal();
+    toast('Fatto! Preparo la tua Home…');
+    renderSidebar();
+    goRoot('home');
+  };
+}
+
+/** Solo il nome, se il profilo esiste già ma è senza nome. */
+async function askName() {
+  const n = await promptModal('Crea il tuo profilo 👤', 'Come ti chiami?', '');
+  if (n) {
+    profile.name = n;
+    saveProfile();
+    toast('Ciao ' + n + '!');
+    render();
+  }
 }
 
 async function myArtists(limit = 14) {
@@ -587,11 +667,21 @@ function musicShelves() {
   return [
     { title: 'I tuoi artisti', style: 'round', queue: false, load: () => myArtists() },
     { title: 'Le tue playlist', queue: false, load: async () => myPlaylistTiles() },
-    { title: 'Per te', load: async () => (seeds.length ? (await api('foryou', { ids: [...new Set(seeds)].join(',') }, 600000)).items.slice(0, 24) : []) },
+    {
+      title: 'Per te',
+      load: async () => {
+        if (seeds.length) return (await api('foryou', { ids: [...new Set(seeds)].join(',') }, 600000)).items.slice(0, 24);
+        // Nessun ascolto ancora: brani dei generi scelti nel profilo
+        const lists2 = await Promise.all(genreQueries().slice(0, 4).map((q) => api('search', { q, type: 'songs' }, 1800000).then((d) => d.items.slice(0, 8)).catch(() => [])));
+        const out = [];
+        for (let i = 0; i < 8; i++) for (const l of lists2) if (l[i]) out.push(l[i]);
+        return out;
+      },
+    },
     { title: '🔥 Hit del momento in Italia', load: async () => (await api('charts', {}, 1800000)).items.slice(0, 30) },
     { title: '🆕 Nuove uscite', load: async () => (await api('news', {}, 1800000)).items.slice(0, 24) },
     { title: 'Ascoltati di recente', load: async () => recentMusic.slice(0, 18).map(histItem) },
-    { title: 'Playlist che potrebbero piacerti', queue: false, load: async () => (await api('search', { q: top ? top + ' playlist' : 'playlist hit italiane', type: 'playlists' }, 1800000)).items.slice(0, 16) },
+    { title: 'Playlist che potrebbero piacerti', queue: false, load: async () => (await api('search', { q: top ? top + ' playlist' : profile.genres[0] ? 'playlist ' + profile.genres[0] : 'playlist hit italiane', type: 'playlists' }, 1800000)).items.slice(0, 16) },
   ];
 }
 
@@ -966,6 +1056,23 @@ function playlistPicker(v, x, y) {
   ], x, y);
 }
 
+function linkFor(v) {
+  if (!v) return '';
+  if (v.kind === 'PLAYLIST') return 'https://www.youtube.com/playlist?list=' + encodeURIComponent(v.id);
+  if (v.kind === 'CHANNEL') return 'https://www.youtube.com/channel/' + encodeURIComponent(v.channelId || v.id);
+  if (v.kind === 'ARTIST') return v.channelId ? 'https://www.youtube.com/channel/' + encodeURIComponent(v.channelId) : 'https://music.youtube.com/search?q=' + encodeURIComponent(v.title);
+  return 'https://youtu.be/' + encodeURIComponent(v.id);
+}
+
+async function shareItem(v) {
+  const url = linkFor(v);
+  if (!url) return toast('Niente da condividere');
+  if (navigator.share) {
+    try { await navigator.share({ title: v.title || 'Tubetto', text: [v.title, v.author].filter(Boolean).join(' — '), url }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast('Link copiato'); } catch (e) { promptModal('Link YouTube', 'Copia il link', url); }
+}
+
 function showItemMenu(l, idx, x, y) {
   const v = l.items[idx];
   if (!v) return;
@@ -979,12 +1086,14 @@ function showItemMenu(l, idx, x, y) {
   } else if (v.kind === 'ARTIST') {
     const f = isArtistFollowed(v.title);
     entries.push({ label: f ? '✕ Smetti di seguire' : '＋ Segui artista', run: () => { toggleArtist(v.title, v.thumb, v.channelId); render(); } });
+    entries.push({ label: '🔗 Condividi link', run: () => shareItem(v) });
   } else if (v.kind === 'CHANNEL') {
     const f = isChannelFollowed(v.channelId || v.id);
     entries.push({ label: f ? '✕ Smetti di seguire' : '＋ Segui canale', run: () => { toggleChannel({ ...v, id: v.channelId || v.id }); render(); } });
   } else if (v.kind === 'PLAYLIST') {
     entries.push({ label: '▶ Riproduci', run: () => openItem(regList([v]), 0, true) });
     entries.push({ label: '↗ Apri su YouTube', run: () => window.open('https://www.youtube.com/playlist?list=' + encodeURIComponent(v.id), '_blank') });
+    entries.push({ label: '🔗 Condividi link', run: () => shareItem(v) });
   } else {
     const music = l.music;
     entries.push({ label: '▶ Riproduci', run: () => playQueue([v], 0, music) });
@@ -999,7 +1108,7 @@ function showItemMenu(l, idx, x, y) {
     if (artist) entries.push({ label: '👤 Vai all\'artista: ' + artist, run: () => go('artist', { name: artist, channelId: '' }) });
     entries.push({ label: '📻 Avvia radio', run: () => startRadio(v, music) });
     entries.push({ label: '↗ Apri su YouTube', run: () => window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(v.id), '_blank') });
-    entries.push({ label: '🔗 Copia link', run: () => navigator.clipboard.writeText('https://youtu.be/' + v.id).then(() => toast('Link copiato')) });
+    entries.push({ label: '🔗 Condividi link YouTube', run: () => shareItem(v) });
   }
   showMenu(entries, x, y);
 }
@@ -1037,6 +1146,7 @@ function confirmModal(msg) {
 function openSettings() {
   $('#modalBox').innerHTML = `
     <h3>Impostazioni</h3>
+    <button class="secondary" id="sProfile" style="margin-top:8px">👤 Profilo e gusti musicali${profile.name ? ' (' + esc(profile.name) + ')' : ''}</button>
     <label>Repository GitHub (utente/repo)</label>
     <input type="text" id="sRepo" value="${esc(cfg.repo)}">
     <label>Token GitHub (lo stesso dell'app)</label>
@@ -1063,6 +1173,7 @@ function openSettings() {
     ].filter(Boolean).join('\n');
   }).catch((e) => { $('#testResult').textContent = '❌ ' + e.message; });
   $('#sClose').onclick = closeModal;
+  $('#sProfile').onclick = () => { closeModal(); setTimeout(() => openProfile(false), 0); };
   $('#sSave').onclick = async () => {
     cfg.repo = $('#sRepo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/+$/, '');
     cfg.token = $('#sToken').value.trim();
@@ -1579,6 +1690,7 @@ function bind() {
   });
   $('#vpSize').addEventListener('click', () => vp.classList.toggle('big'));
 
+  $('#pbShare').addEventListener('click', () => shareItem(currentItem()));
   $('#pbQueue').addEventListener('click', () => {
     $('#queuePanel').classList.toggle('hidden');
     renderQueue();
@@ -1669,6 +1781,11 @@ async function start() {
   if (cfg.token) sync().then((changed) => { if (changed) render(); });
   else setSyncStatus('Sincronizzazione non configurata');
   setTimeout(checkServiceStatus, 3000);
+  setTimeout(() => {
+    if (!$('#modal').classList.contains('hidden')) return;
+    if (!profile.done && lib.artists.length === 0) openProfile(true);
+    else if (!profile.name) askName();
+  }, 1200);
   setInterval(() => cfg.token && sync().then((changed) => { if (changed && navStack[navStack.length - 1].name !== 'search') renderSidebar(); }), 5 * 60000);
 }
 

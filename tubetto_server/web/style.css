@@ -310,3 +310,9 @@ input[type=range] { accent-color: var(--accent); }
 .track .tile, #queueList .tile { width: 48px; height: 48px; border-radius: 6px; font-size: 22px; }
 #queueList .tile { width: 40px; height: 40px; }
 .collage .tile { width: 100%; height: 100%; font-size: 34px; border-radius: 0; }
+
+/* Profilo: aggiunta artista */
+.row-add { display: flex; gap: 8px; margin-top: 8px; }
+.row-add input { flex: 1; }
+.modal-box .chips .chip { cursor: pointer; }
+#sProfile { width: 100%; text-align: left; }
