@@ -13,8 +13,9 @@ import { execFile, spawn } from 'node:child_process';
 import { OPS, TTL, related, dedupeSongs, setWebClients } from './yt.mjs';
 import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } from './resolver.mjs';
 import * as house from './house.mjs';
+import * as extras from './extras.mjs';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -149,6 +150,38 @@ function proxyHls(req, res, src, kind, startAt) {
   });
 }
 
+/** Radio web: inoltra lo stream (anche http, che il pannello in https non potrebbe aprire); HLS convertito da ffmpeg. */
+async function proxyRadio(req, res, url) {
+  if (!/^https?:\/\//.test(url)) return sendJson(res, 400, { error: 'Indirizzo radio non valido' });
+  if (/\.m3u8($|\?)/i.test(url)) {
+    res.writeHead(200, { 'Content-Type': 'audio/aac', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    if (req.method === 'HEAD') return res.end();
+    const ff = spawn('ffmpeg', ['-nostdin', '-loglevel', 'error', '-reconnect', '1', '-reconnect_streamed', '1', '-i', url, '-vn', '-c:a', 'aac', '-b:a', '160k', '-f', 'adts', 'pipe:1'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    ff.stdout.pipe(res);
+    res.on('close', () => ff.kill('SIGKILL'));
+    ff.on('close', () => res.end());
+    return;
+  }
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  let r;
+  try {
+    r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 Tubetto', 'Icy-MetaData': '0' }, signal: ac.signal, redirect: 'follow' });
+  } catch (e) {
+    return sendJson(res, 502, { error: 'Radio non raggiungibile: ' + e.message });
+  }
+  if (!r.ok || !r.body) return sendJson(res, 502, { error: 'Radio non raggiungibile (HTTP ' + r.status + ')' });
+  res.writeHead(200, { 'Content-Type': r.headers.get('content-type') || 'audio/mpeg', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+  if (req.method === 'HEAD') return res.end();
+  try {
+    for await (const chunk of r.body) {
+      if (res.destroyed) break;
+      if (!res.write(chunk)) await waitDrain(res);
+    }
+  } catch (e) { /* chiuso */ }
+  res.end();
+}
+
 async function proxy(req, res, videoId, kind, startAt = 0) {
   let src;
   try {
@@ -226,6 +259,9 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
 // ------------------------------------------------------------------ cache API
 
 const apiCache = new Map();
+const EXTRA_OPS = { radio: extras.radio, lyrics: extras.lyrics };
+TTL.radio = 3600;
+TTL.lyrics = 86400;
 let houseIds = [];
 
 async function runOp(op, params) {
@@ -233,7 +269,7 @@ async function runOp(op, params) {
   const ttl = (TTL[op] || 0) * 1000;
   const c = apiCache.get(key);
   if (ttl && c && Date.now() - c.t < ttl) return c.d;
-  const d = await OPS[op](params);
+  const d = await (OPS[op] || EXTRA_OPS[op])(params);
   if (ttl) {
     apiCache.set(key, { t: Date.now(), d });
     if (apiCache.size > 800) apiCache.delete(apiCache.keys().next().value);
@@ -268,6 +304,12 @@ const server = http.createServer(async (req, res) => {
       return await proxy(req, res, id, kind === 'video' ? 'video' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
 
+    // Radio web (dal pannello o con chiave)
+    if (p === '/radiostream') {
+      if (!authorized(req, url)) return sendJson(res, 401, { error: 'Non autorizzato' });
+      return await proxyRadio(req, res, url.searchParams.get('u') || '');
+    }
+
     if (p.startsWith('/api/')) {
       if (!authorized(req, url)) return sendJson(res, 401, { error: 'Chiave non valida' });
       const op = p.slice(5);
@@ -279,10 +321,35 @@ const server = http.createServer(async (req, res) => {
       if (op === 'prefetch') { prefetch(url.searchParams.get('id')); return sendJson(res, 200, { ok: true }); }
       if (op === 'status') return sendJson(res, 200, { version: VERSION, config: configInfo, stream: getStats(), streamBase: STREAM_BASE });
 
+      // ---- allineamento con l'app: radio, testi, Spotify, accesso con account
+      if (op === 'radio') return sendJson(res, 200, await runOp('radio', url.searchParams));
+      if (op === 'radio/click') { extras.radioClick(url.searchParams.get('id') || ''); return sendJson(res, 200, { ok: true }); }
+      if (op === 'lyrics') return sendJson(res, 200, await runOp('lyrics', url.searchParams));
+      if (op === 'spotify') return sendJson(res, 200, await extras.spotify(url.searchParams));
+      if (op === 'account' && req.method === 'GET') return sendJson(res, 200, extras.accountStatus());
+      if (op === 'account' && req.method === 'POST') {
+        const b = await readBody(req);
+        if (b.logout) extras.accountLogout();
+        else if (b.blob) return sendJson(res, 200, extras.accountImport(b.blob, b.code));
+        else extras.accountSave(b.cookies);
+        log('[account]', b.logout ? 'uscito' : 'accesso salvato');
+        return sendJson(res, 200, extras.accountStatus());
+      }
+
       if (op === 'house/players') return sendJson(res, 200, await house.players());
       if (op === 'house/state') return sendJson(res, 200, await house.state((url.searchParams.get('players') || '').split(',').filter(Boolean)));
       if (op === 'house/play' && req.method === 'POST') {
         const b = await readBody(req);
+        // radio web: Music Assistant apre direttamente lo stream della stazione
+        const radioIt = (b.items || []).find((x) => x && String(x.id || '').startsWith('radio:') && /^https?:\/\//.test(x.url || ''));
+        if (radioIt) {
+          const playersR = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
+          houseIds = [];
+          const rr = await house.play(playersR, [radioIt.url]);
+          extras.radioClick(String(radioIt.id).slice(6));
+          log('[casa]', playersR.join(', '), '← radio', radioIt.title);
+          return sendJson(res, 200, { ok: true, count: 1, items: [radioIt], ...rr });
+        }
         let items = (b.items || []).filter((x) => x && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, 80);
         if (!items.length) return sendJson(res, 400, { error: 'Coda vuota' });
         // coda corta: aggiungo brani simili, come la radio dell'app

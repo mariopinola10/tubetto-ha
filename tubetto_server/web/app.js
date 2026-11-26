@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -85,6 +85,31 @@ let lib = normLib(LS.get('lib', null));
 let history = LS.get('history', []);
 let artImg = LS.get('artImg', {});
 let histDirty = LS.get('histDirty', false);
+/** Radio preferite: stesso formato della sincronizzazione dell'app ({modified, items}). */
+let radios = LS.get('radios', { modified: 0, items: [] });
+/** Ultimo utilizzo di playlist/artisti/canali: le liste partono dalle ultime usate (come l'app). */
+let recents = LS.get('recents', {});
+/** Voci tolte a mano dalla cronologia: la sincronizzazione non le fa ricomparire. */
+let histRemoved = LS.get('histRemoved', { at: 0, ids: {} });
+
+const recentKey = (v) => (v.kind === 'ARTIST' ? 'ar:' + String(v.title).toLowerCase() : v.kind === 'CHANNEL' ? 'ch:' + (v.channelId || v.id) : 'pl:' + v.id);
+function touchRecent(key) {
+  recents[key] = Date.now();
+  const keys = Object.keys(recents);
+  if (keys.length > 500) keys.sort((a, b) => recents[a] - recents[b]).slice(0, 100).forEach((k) => delete recents[k]);
+  LS.set('recents', recents);
+}
+function recentAt(v) {
+  let t = recents[recentKey(v)] || 0;
+  if (v.kind === 'ARTIST') {
+    const n = String(v.title).toLowerCase();
+    for (const h of history) if (cleanArtist(h.author).toLowerCase() === n || String(h.author).toLowerCase() === n) { t = Math.max(t, h.last); break; }
+  }
+  if (!v.kind || v.kind === 'VIDEO') { const h = history.find((x) => x.id === v.id); if (h) t = Math.max(t, h.last); }
+  return t;
+}
+/** Dalle ultime usate; quelle mai usate restano in fondo nell'ordine di prima. */
+const byRecent = (list) => list.map((v, i) => [v, i, recentAt(v)]).sort((a, b) => b[2] - a[2] || a[1] - b[1]).map((x) => x[0]);
 
 function normLib(o) {
   o = o || {};
@@ -197,6 +222,8 @@ function mergeHistory(remote) {
   let changed = false;
   for (const o of remote) {
     if (!o || !o.id) continue;
+    // tolta a mano qui dopo l'ultimo ascolto altrove: non torna
+    if ((o.last || 0) <= Math.max(histRemoved.at || 0, histRemoved.ids[o.id] || 0)) continue;
     const h = map.get(o.id);
     if (!h) {
       map.set(o.id, { id: o.id, title: o.title || '', author: o.author || '', thumb: o.thumb || '', music: !!o.music, count: o.count || 1, last: o.last || 0 });
@@ -255,19 +282,28 @@ async function sync(manual = false) {
       }
       const rh = remote && remote.data && Array.isArray(remote.data.history) ? remote.data.history : null;
       if (rh) histChanged = mergeHistory(rh);
+      const rr = remote && remote.data && remote.data.radios;
+      if (rr && (Number(rr.modified) || 0) > (radios.modified || 0)) {
+        radios = { modified: Number(rr.modified) || 0, items: Array.isArray(rr.items) ? rr.items : [] };
+        LS.set('radios', radios);
+        libChanged = true;
+      }
       if (libChanged || histChanged) {
         renderSidebar();
         refreshLikes();
       }
       const remoteMod = (rl && Number(rl.modified)) || 0;
-      const need = !remote || lib.modified > remoteMod || histDirty || remoteLacks(rh);
+      const remoteRadios = (rr && Number(rr.modified)) || 0;
+      const need = !remote || lib.modified > remoteMod || histDirty || remoteLacks(rh) || (radios.modified || 0) > remoteRadios;
       if (!need) {
         histDirty = false;
         LS.set('histDirty', false);
         setSyncStatus('Sincronizzato ✓ ' + new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
         return libChanged;
       }
-      const payload = { version: 1, device: 'PC (Tubetto Web)', updated: Date.now(), library: lib, history: history.slice(0, 300) };
+      const payload = { version: 1, device: 'Tubetto Server (Home Assistant)', updated: Date.now(), library: lib, history: history.slice(0, 300), radios };
+      // l'accesso YouTube cifrato dall'app resta com'è (qui non lo tocchiamo)
+      if (remote && remote.data && remote.data.account) payload.account = remote.data.account;
       if (await ghPut(payload, remote && remote.sha)) {
         histDirty = false;
         LS.set('histDirty', false);
@@ -288,6 +324,29 @@ async function sync(manual = false) {
 
 // ============================================================ Cronologia
 
+function removeFromHistory(id) {
+  history = history.filter((h) => h.id !== id);
+  histRemoved.ids[id] = Date.now();
+  LS.set('history', history);
+  LS.set('histRemoved', histRemoved);
+  histDirty = true;
+  LS.set('histDirty', true);
+  scheduleSync(5000);
+}
+
+async function clearHistory() {
+  if (!(await confirmModal('Cancellare tutta la cronologia? Spariscono "Ascoltati/Visti di recente" e "Per te" riparte da zero. Preferiti e playlist restano.'))) return false;
+  history = [];
+  histRemoved = { at: Date.now(), ids: {} };
+  LS.set('history', history);
+  LS.set('histRemoved', histRemoved);
+  histDirty = true;
+  LS.set('histDirty', true);
+  scheduleSync(3000);
+  toast('Cronologia cancellata');
+  return true;
+}
+
 function recordListen(v, music) {
   const now = Date.now();
   let h = history.find((x) => x.id === v.id);
@@ -297,6 +356,7 @@ function recordListen(v, music) {
     h.title = v.title || h.title;
     h.author = v.author || h.author;
   } else {
+    if (String(v.id).startsWith('radio:')) return; // le radio non vanno in cronologia
     h = { id: v.id, title: v.title || '', author: v.author || '', thumb: thumbOf(v), music: !!music, count: 1, last: now };
     history.unshift(h);
   }
@@ -386,6 +446,8 @@ async function newPlaylist(firstItem) {
 // ============================================================ Navigazione
 
 let navStack = [];
+/** Raccolta aperta per ultima: è la "provenienza" mostrata nel player. */
+let lastSource = '';
 let renderToken = 0;
 const lists = {};
 let listSeq = 0;
@@ -426,7 +488,7 @@ const stale = (token) => token !== renderToken;
 /** Registra una lista di elementi cliccabili e restituisce il suo id. */
 function regList(items, opts = {}) {
   const id = opts.id || 'l' + ++listSeq;
-  lists[id] = { items, queue: opts.queue !== false, music: opts.music !== false, local: opts.local || null };
+  lists[id] = { items, queue: opts.queue !== false, music: opts.music !== false, local: opts.local || null, source: opts.source || '' };
   return id;
 }
 
@@ -435,6 +497,8 @@ function regList(items, opts = {}) {
 function tileHTML(kind) {
   if (kind === 'mix') return '<div class="tile mix">✨</div>';
   if (kind === 'fav') return '<div class="tile fav">♥</div>';
+  if (kind === 'radio') return '<div class="tile pl">📻</div>';
+  if (kind === 'search') return '<div class="tile mix">🔍</div>';
   return '<div class="tile pl">♫</div>';
 }
 
@@ -467,18 +531,21 @@ function imgHTML(v) {
   if (c && c.length) return collageHTML(c);
   if (v.id === 'tile:mix') return tileHTML('mix');
   if (v.id === 'tile:fav') return tileHTML('fav');
+  if (v.id === 'radio-search') return tileHTML('search');
+  if (v.kind === 'RADIO' && !v.thumb) return tileHTML('radio');
   const t = thumbOf(v);
   if (!t) return tileHTML('pl');
   return `<img loading="lazy" src="${esc(t)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'tile pl',textContent:'♫'}))">`;
 }
 
 function cardHTML(listId, v, i, style) {
-  const sub = v.kind === 'ARTIST' ? 'Artista'
+  const sub = v.kind === 'RADIO' ? v.author || 'Radio'
+    : v.kind === 'ARTIST' ? 'Artista'
     : v.kind === 'CHANNEL' ? (v.views || 'Canale')
     : v.kind === 'PLAYLIST' ? [v.author, v.duration].filter(Boolean).join(' • ') || 'Playlist'
     : [v.author, style === 'wide' ? v.views || v.published : ''].filter(Boolean).join(' • ');
   const badge = v.kind === 'VIDEO' && v.duration ? `<span class="badge">${esc(v.duration)}</span>` : '';
-  const play = v.kind === 'VIDEO' || v.kind === 'PLAYLIST' || String(v.id).startsWith('tile:') || String(v.id).startsWith('local:')
+  const play = v.kind === 'VIDEO' || v.kind === 'RADIO' || v.kind === 'PLAYLIST' || String(v.id).startsWith('tile:') || String(v.id).startsWith('local:')
     ? '<button class="hoverplay" data-act="play" title="Riproduci">▶</button>' : '';
   return `<div class="card ${style || ''}" role="button" tabindex="0" data-list="${listId}" data-idx="${i}">
     <div class="img">${imgHTML(v)}${badge}${play}</div>
@@ -650,13 +717,53 @@ async function myArtists(limit = 14) {
 }
 
 function myPlaylistTiles() {
-  return [
+  return byRecentTiles([
     { id: 'tile:mix', title: 'Il mio mix', author: 'Creato per te', kind: 'PLAYLIST' },
     { id: 'tile:fav', title: 'Brani che ti piacciono', author: lib.favorites.length + ' brani', kind: 'PLAYLIST' },
     ...Object.keys(lib.playlists).map((name) => ({
       id: 'local:' + name, title: name, author: 'La mia playlist', duration: lib.playlists[name].length + ' brani',
       thumb: lib.playlists[name][0] ? thumbOf(lib.playlists[name][0]) : '', kind: 'PLAYLIST',
     })),
+  ]);
+}
+
+/** Mix e Preferiti restano in testa; le playlist seguono dalle ultime usate. */
+function byRecentTiles(list) {
+  return [...list.filter((x) => String(x.id).startsWith('tile:')), ...byRecent(list.filter((x) => !String(x.id).startsWith('tile:')))];
+}
+
+function liveShelves() {
+  const live = (q) => async () => (await api('search', { q, type: 'live' }, 600000)).items;
+  return [
+    {
+      title: '🔴 Dai canali che segui', style: 'wide', music: false, queue: false,
+      load: async () => {
+        const l = await Promise.all(lib.channels.slice(0, 6).map((c) => api('search', { q: c.title, type: 'live' }, 600000).then((d) => d.items.filter((x) => x.channelId === (c.channelId || c.id) || String(x.author).toLowerCase() === String(c.title).toLowerCase())).catch(() => [])));
+        return dedupe(l.flat());
+      },
+    },
+    { title: 'Musica in diretta', style: 'wide', music: false, queue: false, load: live('music live radio 24/7') },
+    { title: 'Radio italiane in diretta', style: 'wide', music: false, queue: false, load: live('radio italiana in diretta') },
+    ...profile.genres.slice(0, 2).map((g) => ({ title: g + ' in diretta', style: 'wide', music: false, queue: false, load: live(g + ' live') })),
+    { title: 'Notizie', style: 'wide', music: false, queue: false, load: live('notizie in diretta tg') },
+    { title: 'Relax e lo-fi', style: 'wide', music: false, queue: false, load: live('lofi relax live') },
+    { title: 'Webcam dal mondo', style: 'wide', music: false, queue: false, load: live('webcam live 4k') },
+  ];
+}
+
+const RADIO_SEARCH_TILE = { id: 'radio-search', title: '🔍 Cerca una radio', author: 'Per nome o città', kind: 'RADIO' };
+
+function radioShelves() {
+  const r = (params) => async () => (await api('radio', params, 3600000)).items;
+  return [
+    { title: '❤ Le tue radio', queue: false, load: async () => [RADIO_SEARCH_TILE, ...radios.items.map(radioFromStore)] },
+    { title: 'Le più ascoltate in Italia', queue: false, load: r({ mode: 'top' }) },
+    { title: 'Campania', queue: false, load: r({ mode: 'state', q: 'Campania' }) },
+    { title: 'Notizie e parlato', queue: false, load: r({ mode: 'tag', q: 'news' }) },
+    { title: 'Pop', queue: false, load: r({ mode: 'tag', q: 'pop' }) },
+    { title: 'Dance', queue: false, load: r({ mode: 'tag', q: 'dance' }) },
+    { title: 'Jazz dal mondo', queue: false, load: r({ mode: 'tag', q: 'jazz', world: 1 }) },
+    { title: 'Lo-fi e relax', queue: false, load: r({ mode: 'tag', q: 'lofi', world: 1 }) },
   ];
 }
 
@@ -665,7 +772,7 @@ function musicShelves() {
   const seeds = [...recentMusic.slice(0, 3).map((h) => h.id), ...lib.favorites.slice(0, 2).map((f) => f.id)];
   const top = topArtists(1)[0];
   return [
-    { title: 'I tuoi artisti', style: 'round', queue: false, load: () => myArtists() },
+    { title: 'I tuoi artisti', style: 'round', queue: false, load: async () => byRecent(await myArtists()) },
     { title: 'Le tue playlist', queue: false, load: async () => myPlaylistTiles() },
     {
       title: 'Per te',
@@ -705,7 +812,7 @@ function videoShelves() {
         return out;
       },
     },
-    { title: 'Canali che segui', style: 'round', queue: false, load: async () => lib.channels.slice() },
+    { title: 'Canali che segui', style: 'round', queue: false, load: async () => byRecent(lib.channels.slice()) },
     { title: 'Visti di recente', style: 'wide', music: false, load: async () => recentVideo.slice(0, 16).map(histItem) },
   ];
 }
@@ -714,11 +821,15 @@ async function viewHome(args, token) {
   const filter = args.filter || 'all';
   const view = $('#view');
   const m = musicShelves(), v = videoShelves();
-  const shelves = filter === 'music' ? m : filter === 'video' ? v : [...m.slice(0, 2), v[0], ...m.slice(2), ...v.slice(1)];
+  let shelves = filter === 'music' ? m : filter === 'video' ? v : filter === 'live' ? liveShelves() : filter === 'radio' ? radioShelves()
+    : [...m.slice(0, 2), v[0], ...m.slice(2), ...v.slice(1)];
+  // in cima: le tue playlist, poi visti/ascoltati di recente, poi il resto (come nell'app)
+  const first = ['Le tue playlist', 'Visti di recente', 'Ascoltati di recente'];
+  shelves = shelves.map((x, i) => [x, first.includes(x.title) ? first.indexOf(x.title) - 10 : i]).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
   view.innerHTML = `
-    <h1>${greeting()}${filter === 'video' ? ' 🎬' : ' 🎧'}</h1>
+    ${filter === 'all' ? `<h1>${greeting()} 🎧</h1>` : ''}
     <div class="chips">
-      ${[['all', 'Tutti'], ['music', 'Musica'], ['video', 'Video']].map(([k, l]) => `<button class="chip ${k === filter ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
+      ${[['all', 'Tutti'], ['music', 'Musica'], ['video', 'Video'], ['live', '🔴 Live'], ['radio', '📻 Radio']].map(([k, l]) => `<button class="chip ${k === filter ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
     </div>
     ${history.length === 0 && lib.artists.length === 0 ? '<p class="sub">Ascolta qualcosa e segui i tuoi artisti: la home imparerà i tuoi gusti.</p>' : ''}
     ${shelves.map((s, i) => `<section class="shelf" id="shelf${i}"><div class="shelf-head"><h2>${esc(s.title)}</h2></div>${loadingHTML('')}</section>`).join('')}`;
@@ -730,7 +841,7 @@ async function viewHome(args, token) {
     const el = $('#shelf' + i);
     if (!el) return;
     if (!items || !items.length) return el.remove();
-    el.innerHTML = `<div class="shelf-head"><h2>${esc(s.title)}</h2></div>` + rowHTML(items, { style: s.style, queue: s.queue !== false, music: s.music !== false });
+    el.innerHTML = `<div class="shelf-head"><h2>${esc(s.title)}</h2></div>` + rowHTML(items, { style: s.style, queue: s.queue !== false, music: s.music !== false, source: s.title });
   });
 }
 
@@ -742,7 +853,7 @@ async function viewSearch(args, token) {
   const input = $('#searchInput');
   if (input.value !== q) input.value = q;
   setTimeout(() => input.focus(), 0);
-  const types = [['songs', 'Brani'], ['artists', 'Artisti'], ['playlists', 'Playlist'], ['videos', 'Video'], ['channels', 'Canali']];
+  const types = [['songs', 'Brani'], ['artists', 'Artisti'], ['playlists', 'Playlist'], ['videos', 'Video'], ['channels', 'Canali'], ['live', '🔴 Live'], ['radio', '📻 Radio']];
   const view = $('#view');
   view.innerHTML = `
     <div class="chips">${types.map(([k, l]) => `<button class="chip ${k === type ? 'active' : ''}" data-type="${k}">${l}</button>`).join('')}</div>
@@ -754,13 +865,13 @@ async function viewSearch(args, token) {
     return;
   }
   try {
-    const d = await api('search', { q, type }, 600000);
+    const d = type === 'radio' ? await api('radio', { mode: 'search', q }, 600000) : await api('search', { q, type }, 600000);
     if (stale(token)) return;
     const items = d.items || [];
     const box = $('#results');
     if (!items.length) return (box.innerHTML = '<div class="empty">Nessun risultato</div>');
     if (type === 'songs') box.innerHTML = tracksHTML(items);
-    else if (type === 'videos') box.innerHTML = gridHTML(items, { style: 'wide', music: false });
+    else if (type === 'videos' || type === 'live') box.innerHTML = gridHTML(items, { style: 'wide', music: false, queue: type !== 'live' });
     else box.innerHTML = gridHTML(items, { queue: false });
   } catch (e) {
     if (!stale(token)) $('#results').innerHTML = errorHTML(e);
@@ -772,17 +883,59 @@ async function viewLibrary(args) {
   const view = $('#view');
   const parts = [];
   if (f === 'all' || f === 'playlists') parts.push(...myPlaylistTiles());
-  if (f === 'all' || f === 'artists') parts.push(...lib.artists.map((a) => ({ ...a, thumb: a.thumb || artImg[a.title.toLowerCase()] || '' })));
-  if (f === 'all' || f === 'channels') parts.push(...lib.channels);
+  if (f === 'history') return viewHistory();
+  if (f === 'all' || f === 'artists') parts.push(...byRecent(lib.artists.map((a) => ({ ...a, thumb: a.thumb || artImg[a.title.toLowerCase()] || '' }))));
+  if (f === 'all' || f === 'channels') parts.push(...byRecent(lib.channels));
+  if (f === 'all' || f === 'radios') parts.push(...radios.items.map(radioFromStore));
   view.innerHTML = `
     <h1>La tua libreria</h1>
     <div class="chips">
-      ${[['all', 'Tutto'], ['playlists', 'Playlist'], ['artists', 'Artisti'], ['channels', 'Canali']].map(([k, l]) => `<button class="chip ${k === f ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
+      ${[['all', 'Tutto'], ['playlists', 'Playlist'], ['artists', 'Artisti'], ['channels', 'Canali'], ['radios', '📻 Radio'], ['history', 'Cronologia']].map(([k, l]) => `<button class="chip ${k === f ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
       <button class="chip" id="libNewPl">＋ Nuova playlist</button>
+      <button class="chip" id="libSpotify">Importa da Spotify</button>
     </div>
     ${parts.length ? gridHTML(parts, { queue: false }) : '<div class="empty">La libreria è vuota</div>'}`;
   $$('.chip[data-filter]', view).forEach((b) => b.addEventListener('click', () => go('library', { filter: b.dataset.filter }, true)));
   $('#libNewPl').addEventListener('click', () => newPlaylist().then(() => render()));
+  $('#libSpotify').addEventListener('click', importSpotify);
+}
+
+function viewHistory() {
+  const items = history.slice(0, 150).map(histItem);
+  $('#view').innerHTML = `<h1>Cronologia</h1>
+    <div class="chips">${[['all', 'Tutto'], ['playlists', 'Playlist'], ['artists', 'Artisti'], ['channels', 'Canali'], ['radios', '📻 Radio'], ['history', 'Cronologia']].map(([k, l]) => `<button class="chip ${k === 'history' ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
+    ${items.length ? '<button class="chip" id="histClear">🗑 Cancella tutto</button>' : ''}</div>
+    <p class="sub">Tieni premuto (o tasto destro / ⋯) su un brano per toglierlo.</p>
+    ${items.length ? tracksHTML(items, { source: 'Cronologia' }) : '<div class="empty">La cronologia è vuota</div>'}`;
+  $$('.chip[data-filter]', $('#view')).forEach((b) => b.addEventListener('click', () => go('library', { filter: b.dataset.filter }, true)));
+  const c = $('#histClear');
+  if (c) c.addEventListener('click', () => clearHistory().then((ok) => ok && render()));
+}
+
+async function importSpotify() {
+  const link = await promptModal('Importa da Spotify', 'Link di una playlist, album o brano Spotify (pubblici)', '');
+  if (!link) return;
+  toast('Leggo la playlist e cerco i brani su YouTube… (può volerci un minuto)', 8000);
+  try {
+    const d = await api('spotify', { url: link });
+    if (!d.items.length) return toast('Nessun brano trovato su YouTube', 5000);
+    const base = d.name + ' (Spotify)';
+    let name = base, n = 2;
+    while (lib.playlists[name]) name = `${base} ${n++}`;
+    lib.playlists[name] = d.items.map((v) => libItem(v, 'VIDEO'));
+    saveLib();
+    const miss = (d.missing || []).slice(0, 12).map((t) => '• ' + t.title + ' — ' + t.artist).join('\n');
+    $('#modalBox').innerHTML = `<h3>✔ Playlist «${esc(name)}» creata</h3>
+      <div class="hint">Trovati ${d.items.length} brani su ${d.total}.${d.total >= 100 ? ' Spotify mostra al massimo circa 100 brani per playlist.' : ''}</div>
+      ${miss ? `<pre class="hint" style="white-space:pre-wrap">Non trovati:\n${esc(miss)}</pre>` : ''}
+      <div class="btns"><button class="secondary" id="spClose">Chiudi</button><button class="secondary" id="spOpen">Apri</button><button class="primary" id="spPlay">▶ Riproduci</button></div>`;
+    $('#modal').classList.remove('hidden');
+    $('#spClose').onclick = closeModal;
+    $('#spOpen').onclick = () => { closeModal(); go('local', { name }); };
+    $('#spPlay').onclick = () => { closeModal(); playQueue(lib.playlists[name], 0, true, 'Playlist «' + name + '»'); };
+  } catch (e) {
+    toast('Importazione non riuscita: ' + e.message, 6000);
+  }
 }
 
 function heroHTML({ cover, round, kind, title, sub, collage }) {
@@ -797,14 +950,16 @@ function playActions(items, music, extra = '') {
   const id = 'pa' + ++listSeq;
   setTimeout(() => {
     const play = $('#' + id + 'p'), sh = $('#' + id + 's');
-    if (play) play.addEventListener('click', () => items.length && playQueue(items, 0, music));
-    if (sh) sh.addEventListener('click', () => items.length && playQueue(shuffled(items), 0, music));
+    if (play) play.addEventListener('click', () => items.length && playQueue(items, 0, music, lastSource));
+    if (sh) sh.addEventListener('click', () => items.length && playQueue(shuffled(items), 0, music, lastSource));
   }, 0);
   return `<div class="actions"><button class="bigplay" id="${id}p" title="Riproduci">▶</button><button class="outline" id="${id}s">🔀 Casuale</button>${extra}</div>`;
 }
 
 async function viewArtist(args, token) {
   const name = args.name;
+  touchRecent('ar:' + String(name).toLowerCase());
+  lastSource = 'Artista: ' + name;
   const view = $('#view');
   view.innerHTML = heroHTML({ cover: args.thumb || artImg[name.toLowerCase()], round: true, kind: 'Artista', title: name }) + loadingHTML();
   try {
@@ -851,6 +1006,8 @@ async function viewChannel(args, token) {
 
 async function viewPlaylist(args, token) {
   const view = $('#view');
+  touchRecent('pl:' + args.id);
+  lastSource = 'Playlist «' + (args.title || 'YouTube') + '»';
   view.innerHTML = heroHTML({ cover: args.thumb, kind: 'Playlist', title: args.title || 'Playlist' }) + loadingHTML();
   try {
     const d = await api('playlist', { id: args.id }, 1800000);
@@ -880,6 +1037,8 @@ function viewLocal(args) {
     view.innerHTML = '<div class="empty">Playlist non trovata</div>';
     return;
   }
+  touchRecent('pl:local:' + name);
+  lastSource = 'Playlist «' + name + '»';
   view.innerHTML = heroHTML({ cover: items[0] ? thumbOf(items[0]) : '', collage: collageThumbs('local:' + name), kind: 'La mia playlist', title: name, sub: items.length + ' brani' })
     + playActions(items, true, '<button class="outline" id="renPl">✎ Rinomina</button><button class="outline" id="delPl">🗑 Elimina</button>')
     + (items.length ? tracksHTML(items, { local: name }) : '<div class="empty">Aggiungi brani dal menu ⋯ di qualsiasi brano</div>');
@@ -902,7 +1061,8 @@ function viewLocal(args) {
 }
 
 function viewFavorites() {
-  const items = lib.favorites.filter((v) => !v.kind || v.kind === 'VIDEO');
+  const items = byRecent(lib.favorites.filter((v) => !v.kind || v.kind === 'VIDEO'));
+  lastSource = 'Brani che ti piacciono';
   $('#view').innerHTML = heroHTML({ cover: 'fav', collage: collageThumbs('tile:fav'), kind: 'Playlist', title: 'Brani che ti piacciono', sub: items.length + ' brani' })
     + playActions(items, true)
     + (items.length ? tracksHTML(items) : '<div class="empty">Tocca ♡ su un brano per aggiungerlo qui</div>');
@@ -929,6 +1089,7 @@ async function buildMix() {
 
 async function viewMix(args, token) {
   const view = $('#view');
+  lastSource = 'Il mio mix';
   view.innerHTML = heroHTML({ cover: 'mix', collage: collageThumbs('tile:mix'), kind: 'Playlist', title: 'Il mio mix', sub: 'Preferiti, artisti che segui e brani simili, senza doppioni' }) + loadingHTML('Compongo il mix…');
   const items = await buildMix();
   if (stale(token)) return;
@@ -944,9 +1105,10 @@ function renderSidebar() {
   const items = [
     { id: 'tile:mix', title: 'Il mio mix', author: 'Playlist • creata per te', tile: 'mix' },
     { id: 'tile:fav', title: 'Brani che ti piacciono', author: 'Playlist • ' + lib.favorites.length + ' brani', tile: 'fav' },
-    ...Object.keys(lib.playlists).map((n) => ({ id: 'local:' + n, title: n, author: 'Playlist • ' + lib.playlists[n].length + ' brani', thumb: lib.playlists[n][0] ? thumbOf(lib.playlists[n][0]) : '', kind: 'PLAYLIST' })),
-    ...lib.artists.map((a) => ({ ...a, author: 'Artista', round: true, thumb: a.thumb || artImg[a.title.toLowerCase()] || '' })),
-    ...lib.channels.map((c) => ({ ...c, author: 'Canale', round: true })),
+    ...byRecent(Object.keys(lib.playlists).map((n) => ({ id: 'local:' + n, title: n, author: 'Playlist • ' + lib.playlists[n].length + ' brani', thumb: lib.playlists[n][0] ? thumbOf(lib.playlists[n][0]) : '', kind: 'PLAYLIST' }))),
+    ...byRecent(lib.artists.map((a) => ({ ...a, author: 'Artista', round: true, thumb: a.thumb || artImg[a.title.toLowerCase()] || '' }))),
+    ...byRecent(lib.channels.map((c) => ({ ...c, author: 'Canale', round: true }))),
+    ...radios.items.map((r) => ({ ...radioFromStore(r), author: 'Radio', tile: r.thumb ? '' : 'radio' })),
   ];
   const id = regList(items, { queue: false, id: 'side' });
   $('#sideList').innerHTML = items.map((v, i) => `
@@ -964,33 +1126,36 @@ function openItem(listId, idx, forcePlay = false) {
   const v = l.items[idx];
   if (!v) return;
   const id = String(v.id);
+  if (id === 'radio-search') return askRadioSearch();
+  if (v.kind === 'RADIO') return playRadio(v);
+  if (v.kind === 'PLAYLIST' || v.kind === 'ARTIST' || v.kind === 'CHANNEL') { touchRecent(recentKey(v)); lastSource = v.kind === 'PLAYLIST' ? 'Playlist «' + v.title + '»' : v.title; }
   if (id === 'tile:mix') {
-    if (forcePlay) return buildMix().then((items) => items.length && playQueue(items, 0, true));
+    if (forcePlay) return buildMix().then((items) => items.length && playQueue(items, 0, true, 'Il mio mix'));
     return go('mix');
   }
   if (id === 'tile:fav') {
-    if (forcePlay) return lib.favorites.length && playQueue(lib.favorites, 0, true);
+    if (forcePlay) return lib.favorites.length && playQueue(byRecent(lib.favorites), 0, true, 'Brani che ti piacciono');
     return go('favorites');
   }
   if (id.startsWith('local:')) {
     const name = id.slice(6);
-    if (forcePlay) return (lib.playlists[name] || []).length && playQueue(lib.playlists[name], 0, true);
+    if (forcePlay) return (lib.playlists[name] || []).length && playQueue(lib.playlists[name], 0, true, 'Playlist «' + name + '»');
     return go('local', { name });
   }
   if (v.kind === 'ARTIST') return go('artist', { name: v.title, channelId: v.channelId || '', thumb: v.thumb || '' });
   if (v.kind === 'CHANNEL') return go('channel', { id: v.channelId || v.id, title: v.title, thumb: v.thumb || '' });
   if (v.kind === 'PLAYLIST') {
     if (forcePlay) {
-      return api('playlist', { id: v.id }, 1800000).then((d) => d.items.length && playQueue(d.items, 0, true)).catch((e) => toast(e.message));
+      return api('playlist', { id: v.id }, 1800000).then((d) => d.items.length && playQueue(d.items, 0, true, 'Playlist «' + v.title + '»')).catch((e) => toast(e.message));
     }
     return go('playlist', { id: v.id, title: v.title, thumb: v.thumb || '' });
   }
   // brano/video: la coda prosegue con gli altri della stessa lista
   if (l.queue) {
     const vids = l.items.filter((x) => !x.kind || x.kind === 'VIDEO');
-    playQueue(vids, Math.max(0, vids.indexOf(v)), l.music);
+    playQueue(vids, Math.max(0, vids.indexOf(v)), l.music, l.source || lastSource);
   } else {
-    playQueue([v], 0, l.music);
+    playQueue([v], 0, l.music, '');
   }
 }
 
@@ -1047,13 +1212,32 @@ function hideMenu() {
   $('#ctxmenu').classList.add('hidden');
 }
 
-function playlistPicker(v, x, y) {
-  const names = Object.keys(lib.playlists);
-  showMenu([
-    { label: '＋ Nuova playlist…', run: () => newPlaylist(v) },
-    ...(names.length ? ['-'] : []),
-    ...names.map((n) => ({ label: '♫ ' + n, run: () => addToPlaylist(n, v) })),
-  ], x, y);
+/** Playlist del brano: spunta = c'è, togli la spunta per rimuoverlo (come nell'app). */
+function playlistPicker(v) {
+  const names = byRecent(Object.keys(lib.playlists).map((n) => ({ id: 'local:' + n, title: n, kind: 'PLAYLIST' }))).map((x) => x.title);
+  if (!names.length) return newPlaylist(v);
+  $('#modalBox').innerHTML = `<h3>Playlist di «${esc(String(v.title).slice(0, 50))}»</h3>
+    <div class="checklist">${names.map((n, i) => `<label class="checkrow"><input type="checkbox" data-i="${i}" ${(lib.playlists[n] || []).some((x) => x.id === v.id) ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>
+    <div class="btns"><button class="secondary" id="ppNew">＋ Nuova playlist</button><button class="secondary" id="ppCancel">Annulla</button><button class="primary" id="ppSave">Salva</button></div>`;
+  $('#modal').classList.remove('hidden');
+  $('#ppCancel').onclick = closeModal;
+  $('#ppNew').onclick = () => { closeModal(); newPlaylist(v).then(() => render()); };
+  $('#ppSave').onclick = () => {
+    const added = [], removed = [];
+    $$('#modalBox input[type=checkbox]').forEach((c) => {
+      const n = names[Number(c.dataset.i)];
+      const list = lib.playlists[n] || [];
+      const has = list.some((x) => x.id === v.id);
+      if (c.checked && !has) { list.push(libItem(v, 'VIDEO')); lib.playlists[n] = list; added.push(n); }
+      if (!c.checked && has) { lib.playlists[n] = list.filter((x) => x.id !== v.id); removed.push(n); }
+    });
+    closeModal();
+    if (added.length || removed.length) {
+      saveLib();
+      toast([added.length ? 'Aggiunto a ' + added.map((n) => '«' + n + '»').join(', ') : '', removed.length ? 'Tolto da ' + removed.map((n) => '«' + n + '»').join(', ') : ''].filter(Boolean).join(' • '));
+      render();
+    }
+  };
 }
 
 function linkFor(v) {
@@ -1078,7 +1262,12 @@ function showItemMenu(l, idx, x, y) {
   if (!v) return;
   const id = String(v.id);
   const entries = [];
-  if (id.startsWith('tile:')) return;
+  if (id.startsWith('tile:') || id === 'radio-search') return;
+  if (v.kind === 'RADIO') {
+    entries.push({ label: '▶ Ascolta', run: () => playRadio(v) });
+    entries.push({ label: isRadioFav(v.id) ? 'Rimuovi dalle radio preferite' : '❤ Aggiungi alle radio preferite', run: () => { toggleRadioFav(v); render(); } });
+    return showMenu(entries, x, y);
+  }
   if (id.startsWith('local:')) {
     const name = id.slice(6);
     entries.push({ label: '▶ Riproduci', run: () => (lib.playlists[name] || []).length && playQueue(lib.playlists[name], 0, true) });
@@ -1101,7 +1290,7 @@ function showItemMenu(l, idx, x, y) {
     entries.push({ label: '➕ Aggiungi alla coda', run: () => { enqueue(v); toast('Aggiunto alla coda'); } });
     entries.push('-');
     entries.push({ label: isFav(v.id) ? '♥ Rimuovi da Mi piace' : '♡ Mi piace', run: () => toggleFav(v) });
-    entries.push({ label: '♫ Aggiungi a playlist…', run: () => setTimeout(() => playlistPicker(v, x, y), 0) });
+    entries.push({ label: '＋ Aggiungi o togli da playlist…', run: () => setTimeout(() => playlistPicker(v), 0) });
     if (l.local) entries.push({ label: '✕ Rimuovi da questa playlist', run: () => { const pl = lib.playlists[l.local]; if (pl) { lib.playlists[l.local] = pl.filter((x2) => x2.id !== v.id); saveLib(); render(); } } });
     entries.push('-');
     const artist = cleanArtist(v.author);
@@ -1109,6 +1298,11 @@ function showItemMenu(l, idx, x, y) {
     entries.push({ label: '📻 Avvia radio', run: () => startRadio(v, music) });
     entries.push({ label: '↗ Apri su YouTube', run: () => window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(v.id), '_blank') });
     entries.push({ label: '🔗 Condividi link YouTube', run: () => shareItem(v) });
+    if (history.some((h) => h.id === v.id)) {
+      entries.push('-');
+      entries.push({ label: '🗑 Rimuovi da "Ascoltati/Visti di recente"', run: () => { removeFromHistory(v.id); toast('Rimosso dalla cronologia'); render(); } });
+      entries.push({ label: '🗑 Cancella tutta la cronologia…', run: () => clearHistory().then((ok) => ok && render()) });
+    }
   }
   showMenu(entries, x, y);
 }
@@ -1147,6 +1341,8 @@ function openSettings() {
   $('#modalBox').innerHTML = `
     <h3>Impostazioni</h3>
     <button class="secondary" id="sProfile" style="margin-top:8px">👤 Profilo e gusti musicali${profile.name ? ' (' + esc(profile.name) + ')' : ''}</button>
+    <button class="secondary" id="sAccount" style="margin-top:8px">🔐 Accesso YouTube (facoltativo)</button>
+    <button class="secondary" id="sHistory" style="margin-top:8px">🗑 Cronologia: vedi o cancella</button>
     <label>Repository GitHub (utente/repo)</label>
     <input type="text" id="sRepo" value="${esc(cfg.repo)}">
     <label>Token GitHub (lo stesso dell'app)</label>
@@ -1174,6 +1370,8 @@ function openSettings() {
   }).catch((e) => { $('#testResult').textContent = '❌ ' + e.message; });
   $('#sClose').onclick = closeModal;
   $('#sProfile').onclick = () => { closeModal(); setTimeout(() => openProfile(false), 0); };
+  $('#sAccount').onclick = () => { closeModal(); setTimeout(openAccount, 0); };
+  $('#sHistory').onclick = () => { closeModal(); go('library', { filter: 'history' }); };
   $('#sSave').onclick = async () => {
     cfg.repo = $('#sRepo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/+$/, '');
     cfg.token = $('#sToken').value.trim();
@@ -1272,8 +1470,9 @@ function localTimes() {
   return { c: (pl.offset || 0) + (m.currentTime || 0), d: itemSeconds(v), live: true };
 }
 
-function playQueue(items, idx, music = true) {
+function playQueue(items, idx, music = true, source = '') {
   if (!items || !items.length) return;
+  pl.source = source || '';
   pl.queue = items.map((v) => ({ ...v }));
   pl.idx = Math.min(Math.max(0, idx), pl.queue.length - 1);
   pl.music = music;
@@ -1289,11 +1488,12 @@ function playCurrent() {
   pl.recorded = false;
   pl.retried = false;
   pl.offset = 0;
+  pl.lastProgress = Date.now();
   const m = media();
-  m.src = srcFor(v, pl.music ? 'audio' : 'video');
+  m.src = v.kind === 'RADIO' ? radioSrc(v) : srcFor(v, pl.music ? 'audio' : 'video');
   m.play().catch(() => { /* serve un tocco dell'utente */ });
   updateNowPlaying();
-  if (pl.idx >= pl.queue.length - 2) extendQueue();
+  if (v.kind !== 'RADIO' && pl.idx >= pl.queue.length - 2) extendQueue();
 }
 
 function onMediaError() {
@@ -1306,21 +1506,39 @@ function onMediaError() {
     m.play().catch(() => null);
     return;
   }
+  if (v.kind === 'RADIO') {
+    if (!pl.retried) { pl.retried = true; m.src = radioSrc(v); m.play().catch(() => null); return; }
+    return toast('Questa radio non risponde: provane un\'altra', 5000);
+  }
   if (!pl.retried) {
     pl.retried = true;
     m.src = srcFor(v, 'audio', pl.offset || 0);
     m.play().catch(() => null);
     return;
   }
+  // mai senza musica: si passa al successivo (dopo tanti errori di fila, con una pausa più lunga)
   pl.skips++;
-  if (pl.skips > 5) return toast('Troppi brani non riproducibili di seguito: mi fermo. Controlla "Stato" nelle impostazioni.', 5000);
   toast('Brano non riproducibile, passo al successivo');
-  setTimeout(() => { if (currentItem() === v) next(); }, 800);
+  setTimeout(() => { if (currentItem() === v) next(); }, pl.skips > 5 ? 8000 : 800);
 }
+
+/** Rete di sicurezza: se la riproduzione resta ferma (senza pausa dell'utente) per 25 s, si va avanti. */
+setInterval(() => {
+  const m = media();
+  const v = currentItem();
+  if (!v || isHouse() || m.paused || v.kind === 'RADIO') { pl.lastProgress = Date.now(); return; }
+  if (pl.lastTime !== m.currentTime) { pl.lastTime = m.currentTime; pl.lastProgress = Date.now(); return; }
+  if (Date.now() - (pl.lastProgress || 0) > 25000) {
+    pl.lastProgress = Date.now();
+    toast('Il brano si è bloccato: passo al successivo');
+    next();
+  }
+}, 5000);
 
 function next(auto = false) {
   if (!pl.queue.length) return;
   if (isHouse()) return houseCmd('next');
+  if (currentItem() && currentItem().kind === 'RADIO') return; // la radio non ha un "successivo"
   if (auto && pl.repeat) {
     media().currentTime = 0;
     media().play();
@@ -1336,7 +1554,18 @@ function next(auto = false) {
     pl.idx++;
     return playCurrent();
   }
-  extendQueue().then((added) => {
+  extendQueue().then(async (added) => {
+    if (!added) {
+      // niente brani simili: si riparte da "Per te"
+      try {
+        const seeds = history.filter((h) => h.music).slice(0, 3).map((h) => h.id);
+        const d = seeds.length ? await api('foryou', { ids: seeds.join(',') }, 600000) : await api('charts', {}, 1800000);
+        const have = new Set(pl.queue.map((x) => x.id));
+        const more = d.items.filter((x) => !have.has(x.id)).slice(0, 20);
+        pl.queue.push(...more);
+        added = more.length > 0;
+      } catch (e) { added = false; }
+    }
     if (added) {
       pl.idx++;
       playCurrent();
@@ -1407,7 +1636,7 @@ function updateNowPlaying() {
   $('#pbThumb').src = thumbOf(v);
   $('#pbTitle').textContent = v.title || 'Caricamento…';
   $('#pbTitle').title = v.title || '';
-  $('#pbArtist').textContent = v.author || '';
+  $('#pbArtist').textContent = [v.author || '', pl.source && v.kind !== 'RADIO' ? '🎵 ' + pl.source : ''].filter(Boolean).join(' · ');
   $('#vpTitle').textContent = v.title || 'Video';
   refreshLikes();
   refreshPlayButton();
@@ -1418,6 +1647,124 @@ function updateNowPlaying() {
       navigator.mediaSession.metadata = new MediaMetadata({ title: v.title || '', artist: v.author || '', artwork: [{ src: thumbOf(v), sizes: '320x320' }] });
     } catch (e) { /* non supportato */ }
   }
+}
+
+// ============================================================ Radio web
+
+const radioFromStore = (r) => ({ id: r.id, title: r.title, author: r.author || '', url: r.url, thumb: r.thumb || '', kind: 'RADIO', duration: 'LIVE' });
+const isRadioFav = (id) => radios.items.some((r) => r.id === id);
+
+function toggleRadioFav(v) {
+  const on = isRadioFav(v.id);
+  radios.items = on ? radios.items.filter((r) => r.id !== v.id) : [{ id: v.id, title: v.title, author: v.author || '', url: v.url, thumb: v.thumb || '' }, ...radios.items];
+  radios.modified = Date.now();
+  LS.set('radios', radios);
+  scheduleSync(3000);
+  renderSidebar();
+  toast(on ? 'Tolta dalle radio preferite' : 'Aggiunta alle radio preferite');
+}
+
+function radioSrc(v) {
+  const q = new URLSearchParams({ u: v.url });
+  if (cfg.key) q.set('key', cfg.key);
+  return 'radiostream?' + q.toString();
+}
+
+function playRadio(v) {
+  if (!v || !v.url) return toast('Indirizzo della radio non disponibile');
+  playQueue([v], 0, true, 'Radio');
+  if (!isHouse()) api('radio/click', { id: String(v.id).slice(6) }).catch(() => null);
+  toast('📻 ' + v.title);
+}
+
+async function askRadioSearch() {
+  const q = await promptModal('Cerca una radio', 'Nome o città (es. Kiss Kiss, RTL, Napoli)', '');
+  if (q) go('search', { q, type: 'radio' });
+}
+
+// ============================================================ Testi sincronizzati (LRCLIB)
+
+let lyricsTimer = null;
+
+async function showLyrics() {
+  const v = currentItem();
+  if (!v || v.kind === 'RADIO') return toast('Niente testo per questo elemento');
+  $('#modalBox').innerHTML = `<h3>${esc(v.title)}</h3><div class="hint">${esc(v.author || '')}</div><div id="lyBox" class="lyrics">Cerco il testo…</div>
+    <div class="btns"><button class="primary" id="lyClose">Chiudi</button></div>`;
+  $('#modal').classList.remove('hidden');
+  const stop = () => { clearInterval(lyricsTimer); closeModal(); };
+  $('#lyClose').onclick = stop;
+  try {
+    const dur = itemSeconds(v) || Math.round(localTimes().d || 0);
+    const d = await api('lyrics', { title: v.title, artist: cleanArtist(v.author || ''), dur }, 86400000);
+    const box = $('#lyBox');
+    if (!box) return;
+    if (!d.synced.length) {
+      box.innerHTML = d.plain ? `<pre>${esc(d.plain)}</pre>` : 'Testo non trovato per questo brano.';
+      return;
+    }
+    box.innerHTML = d.synced.map((l, i) => `<div class="ly" data-i="${i}" data-t="${l.t}">${esc(l.text || '♪')}</div>`).join('');
+    box.onclick = (e) => { const el = e.target.closest('.ly'); if (el) seekTo(Number(el.dataset.t) / Math.max(1, localTimes().d)); };
+    let cur = -1;
+    clearInterval(lyricsTimer);
+    lyricsTimer = setInterval(() => {
+      if ($('#modal').classList.contains('hidden') || !$('#lyBox')) return clearInterval(lyricsTimer);
+      const t = isHouse() ? (pl.house && pl.house.position) || 0 : localTimes().c;
+      let idx = -1;
+      for (let i = 0; i < d.synced.length; i++) if (d.synced[i].t <= t + 0.3) idx = i;
+      if (idx !== cur) {
+        $$('#lyBox .ly.on').forEach((x) => x.classList.remove('on'));
+        const el = $(`#lyBox .ly[data-i="${idx}"]`);
+        if (el) { el.classList.add('on'); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+        cur = idx;
+      }
+    }, 300);
+  } catch (e) {
+    const box = $('#lyBox');
+    if (box) box.textContent = '⚠ ' + e.message;
+  }
+}
+
+// ============================================================ Accesso YouTube (facoltativo)
+
+async function openAccount() {
+  let st = { loggedIn: false };
+  try { st = await api('account'); } catch (e) { /* stato non letto */ }
+  $('#modalBox').innerHTML = `
+    <h3>🔐 Accesso YouTube ${st.loggedIn ? '(collegato)' : '(facoltativo)'}</h3>
+    <div class="hint">Tubetto funziona senza account. L'accesso serve solo per i brani che YouTube mostra agli utenti collegati
+      (limiti di età con account verificato, contenuti riservati/Premium, controlli "non sei un bot"), e viene usato solo quando
+      senza account un brano non parte.<br><br>
+      • Meglio un <b>account secondario</b>: usarlo fuori dalle app ufficiali è contro le regole di YouTube.<br>
+      • I dati della sessione restano su questo Home Assistant (cartella share/tubetto), non vanno su internet.</div>
+    <label>Ricevi dall'app (consigliato)</label>
+    <div class="hint">Nell'app: Impostazioni → Accesso YouTube → Accedi, poi "Salva e invia" con un codice. Qui inserisci lo stesso codice
+      (serve la sincronizzazione con lo stesso repository).</div>
+    <div class="row-add"><input type="password" id="acCode" placeholder="Codice scelto nell'app"><button class="secondary" id="acImport">Ricevi</button></div>
+    <label>Oppure incolla i cookie (avanzato)</label>
+    <div class="hint">Da un browser dove hai fatto l'accesso a youtube.com: estensione "Get cookies.txt LOCALLY" → esporta cookies.txt e incolla qui.</div>
+    <textarea id="acCookies" rows="4" placeholder="# Netscape HTTP Cookie File…"></textarea>
+    <div class="btns">
+      ${st.loggedIn ? '<button class="secondary" id="acLogout">⎋ Esci dall\'account</button>' : ''}
+      <button class="secondary" id="acClose">Chiudi</button>
+      <button class="primary" id="acSave">Salva cookie</button>
+    </div>`;
+  $('#modal').classList.remove('hidden');
+  $('#acClose').onclick = closeModal;
+  const done = (r) => { closeModal(); toast(r.loggedIn ? '✔ Accesso attivo: verrà usato solo quando serve' : 'Account scollegato', 5000); };
+  $('#acSave').onclick = async () => {
+    try { done(await postApi('account', { cookies: $('#acCookies').value })); } catch (e) { toast(e.message, 6000); }
+  };
+  $('#acImport').onclick = async () => {
+    try {
+      if (!cfg.token) throw new Error('Configura prima la sincronizzazione (Impostazioni)');
+      const remote = await ghGet();
+      const blob = remote && remote.data && remote.data.account;
+      done(await postApi('account', { blob, code: $('#acCode').value }));
+    } catch (e) { toast(e.message, 6000); }
+  };
+  const lo = $('#acLogout');
+  if (lo) lo.onclick = async () => { try { done(await postApi('account', { logout: true })); } catch (e) { toast(e.message); } };
 }
 
 function renderQueue() {
@@ -1489,7 +1836,7 @@ setInterval(() => {
 // ---------------- "Suona in casa" (Music Assistant) ----------------
 
 async function houseSend() {
-  const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author }));
+  const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url }));
   if (!items.length) return;
   media().pause();
   setVideoPanelFor(true);
@@ -1691,6 +2038,7 @@ function bind() {
   $('#vpSize').addEventListener('click', () => vp.classList.toggle('big'));
 
   $('#pbShare').addEventListener('click', () => shareItem(currentItem()));
+  $('#pbLyrics').addEventListener('click', showLyrics);
   $('#pbQueue').addEventListener('click', () => {
     $('#queuePanel').classList.toggle('hidden');
     renderQueue();

@@ -7,6 +7,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 
 const COOKIES = '/share/tubetto/cookies.txt';
+/** Video che YouTube mostra solo con un account (età, iscritti): niente tentativi lunghi se non ci sono i cookie. */
+const accountOnly = new Map();
 /** Se InnerTube diretto è bloccato ("bot"), per un po' si va subito con yt-dlp + PO token. */
 let innertubeDownUntil = 0;
 
@@ -350,11 +352,24 @@ export async function resolve(videoId, kind = 'audio', force = false, preferItag
   const c = cache.get(key);
   if (!force && c && Date.now() < c.expires) return c.src;
   let src;
+  const hasCookies = fs.existsSync(COOKIES);
+  if (!hasCookies && accountOnly.get(videoId) > Date.now()) {
+    throw new Error('ACCOUNT: YouTube mostra questo brano solo con un account (età o accesso limitato)');
+  }
   try {
     if (Date.now() < innertubeDownUntil) throw new Error('InnerTube diretto bloccato da poco: uso yt-dlp con PO token');
     src = await fromInnertube(videoId, kind, preferItag || (c && c.src.itag));
   } catch (e1) {
-    if (Date.now() >= innertubeDownUntil) innertubeDownUntil = Date.now() + 30 * 60000;
+    const msg = String(e1.message || '');
+    const loginOnly = /LOGIN_REQUIRED/.test(msg) && !/bot/i.test(msg) && !/HTTP|stream|link/.test(msg);
+    if (loginOnly && !hasCookies) {
+      // il problema è il video, non il server: si salta subito (l'interfaccia passa al successivo)
+      accountOnly.set(videoId, Date.now() + 6 * 3600000);
+      console.log('[stream] salto', videoId, ': serve un account YouTube');
+      throw new Error('ACCOUNT: YouTube mostra questo brano solo con un account (età o accesso limitato)');
+    }
+    // solo il controllo "non sei un bot" giustifica il passaggio a yt-dlp per tutti i brani
+    if (/bot/i.test(msg) && Date.now() >= innertubeDownUntil) innertubeDownUntil = Date.now() + 30 * 60000;
     try {
       src = await fromYtdlp(videoId, kind);
     } catch (e2) {

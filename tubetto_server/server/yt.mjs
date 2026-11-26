@@ -41,6 +41,7 @@ const P = {
   playlists: 'EgIQAw==',
   channels: 'EgIQAg==',
   month: 'EgQIBBAB',
+  live: 'EgJAAQ==',
   songs: 'EgWKAQIIAWoMEA4QChADEAQQCRAF',
   artists: 'EgWKAQIgAWoMEA4QChADEAQQCRAF',
   tabVideos: 'EgZ2aWRlb3PyBgQKAjoA',
@@ -81,6 +82,8 @@ const safe = (p, fallback = []) => p.catch(() => fallback);
 
 // ------------------------------------------------------------------ Operazioni
 
+export { searchMusic };
+
 export const OPS = {
   async ping() {
     return { ok: true, version: VERSION };
@@ -94,6 +97,7 @@ export const OPS = {
       case 'artists': return { items: await searchArtists(query) };
       case 'playlists': return { items: await searchKind(query, P.playlists, 'PLAYLIST') };
       case 'channels': return { items: await searchKind(query, P.channels, 'CHANNEL') };
+      case 'live': return { items: (await searchKind(query, P.live, 'VIDEO')).slice(0, 16) };
       default: return { items: await searchKind(query, P.videos, 'VIDEO') };
     }
   },
