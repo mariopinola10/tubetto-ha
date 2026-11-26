@@ -209,3 +209,39 @@ export function accountImport(blob, code) {
     throw new Error('Codice sbagliato: deve essere uguale a quello scelto nell\'app');
   }
 }
+
+// ------------------------------------------------------------------ Film di pubblico dominio (Internet Archive)
+
+export async function films(q) {
+  const query = (q.get('q') || '').trim();
+  const extra = (q.get('extra') || '').trim();
+  const parts = ['collection:feature_films', 'mediatype:movies'];
+  if (query) parts.push(`(title:(${query}) OR subject:(${query}) OR description:(${query}))`);
+  if (extra) parts.push(extra);
+  const url = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent(parts.join(' AND '))
+    + '&fl[]=identifier&fl[]=title&fl[]=year&fl[]=runtime&sort[]=' + encodeURIComponent('downloads desc') + '&rows=30&page=1&output=json';
+  const r = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error('Internet Archive HTTP ' + r.status);
+  const docs = ((await r.json()).response || {}).docs || [];
+  return {
+    items: docs.filter((d) => d.identifier).map((d) => ({
+      id: 'film:' + d.identifier,
+      title: d.title || d.identifier,
+      author: ['Internet Archive', d.year].filter(Boolean).join(' · '),
+      duration: d.runtime || '',
+      kind: 'FILM',
+      thumb: 'https://archive.org/services/img/' + d.identifier,
+    })),
+  };
+}
+
+/** File MP4 del film (il browser lo apre direttamente da archive.org). */
+export async function filmUrl(q) {
+  const id = String(q.get('id') || '').replace(/^film:/, '');
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('Film non valido');
+  const r = await fetch('https://archive.org/metadata/' + id, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error('Internet Archive HTTP ' + r.status);
+  const mp4 = ((await r.json()).files || []).filter((f) => /\.mp4$/i.test(f.name || '')).sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0))[0];
+  if (!mp4) throw new Error('Questo film non ha una versione MP4 riproducibile');
+  return { url: 'https://archive.org/download/' + id + '/' + mp4.name.split('/').map(encodeURIComponent).join('/') };
+}

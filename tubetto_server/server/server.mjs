@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -259,7 +259,9 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
 // ------------------------------------------------------------------ cache API
 
 const apiCache = new Map();
-const EXTRA_OPS = { radio: extras.radio, lyrics: extras.lyrics };
+const EXTRA_OPS = { radio: extras.radio, lyrics: extras.lyrics, films: extras.films, filmurl: extras.filmUrl };
+TTL.films = 3600;
+TTL.filmurl = 3600;
 TTL.radio = 3600;
 TTL.lyrics = 86400;
 let houseIds = [];
@@ -325,6 +327,8 @@ const server = http.createServer(async (req, res) => {
       if (op === 'radio') return sendJson(res, 200, await runOp('radio', url.searchParams));
       if (op === 'radio/click') { extras.radioClick(url.searchParams.get('id') || ''); return sendJson(res, 200, { ok: true }); }
       if (op === 'lyrics') return sendJson(res, 200, await runOp('lyrics', url.searchParams));
+      if (op === 'films') return sendJson(res, 200, await runOp('films', url.searchParams));
+      if (op === 'filmurl') return sendJson(res, 200, await runOp('filmurl', url.searchParams));
       if (op === 'spotify') return sendJson(res, 200, await extras.spotify(url.searchParams));
       if (op === 'account' && req.method === 'GET') return sendJson(res, 200, extras.accountStatus());
       if (op === 'account' && req.method === 'POST') {

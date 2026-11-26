@@ -42,6 +42,7 @@ const P = {
   channels: 'EgIQAg==',
   month: 'EgQIBBAB',
   live: 'EgJAAQ==',
+  long: 'EgQQARgC',
   songs: 'EgWKAQIIAWoMEA4QChADEAQQCRAF',
   artists: 'EgWKAQIgAWoMEA4QChADEAQQCRAF',
   tabVideos: 'EgZ2aWRlb3PyBgQKAjoA',
@@ -98,6 +99,7 @@ export const OPS = {
       case 'playlists': return { items: await searchKind(query, P.playlists, 'PLAYLIST') };
       case 'channels': return { items: await searchKind(query, P.channels, 'CHANNEL') };
       case 'live': return { items: (await searchKind(query, P.live, 'VIDEO')).slice(0, 16) };
+      case 'long': return { items: (await searchKind(query, P.long, 'VIDEO')).slice(0, 20) };
       default: return { items: await searchKind(query, P.videos, 'VIDEO') };
     }
   },

@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -356,7 +356,7 @@ function recordListen(v, music) {
     h.title = v.title || h.title;
     h.author = v.author || h.author;
   } else {
-    if (String(v.id).startsWith('radio:')) return; // le radio non vanno in cronologia
+    if (String(v.id).startsWith('radio:') || String(v.id).startsWith('film:')) return; // radio e film d'archivio non vanno in cronologia
     h = { id: v.id, title: v.title || '', author: v.author || '', thumb: thumbOf(v), music: !!music, count: 1, last: now };
     history.unshift(h);
   }
@@ -544,8 +544,8 @@ function cardHTML(listId, v, i, style) {
     : v.kind === 'CHANNEL' ? (v.views || 'Canale')
     : v.kind === 'PLAYLIST' ? [v.author, v.duration].filter(Boolean).join(' • ') || 'Playlist'
     : [v.author, style === 'wide' ? v.views || v.published : ''].filter(Boolean).join(' • ');
-  const badge = v.kind === 'VIDEO' && v.duration ? `<span class="badge">${esc(v.duration)}</span>` : '';
-  const play = v.kind === 'VIDEO' || v.kind === 'RADIO' || v.kind === 'PLAYLIST' || String(v.id).startsWith('tile:') || String(v.id).startsWith('local:')
+  const badge = (v.kind === 'VIDEO' || v.kind === 'FILM') && v.duration ? `<span class="badge">${esc(v.duration)}</span>` : '';
+  const play = v.kind === 'VIDEO' || v.kind === 'RADIO' || v.kind === 'FILM' || v.kind === 'PLAYLIST' || String(v.id).startsWith('tile:') || String(v.id).startsWith('local:')
     ? '<button class="hoverplay" data-act="play" title="Riproduci">▶</button>' : '';
   return `<div class="card ${style || ''}" role="button" tabindex="0" data-list="${listId}" data-idx="${i}">
     <div class="img">${imgHTML(v)}${badge}${play}</div>
@@ -751,6 +751,33 @@ function liveShelves() {
   ];
 }
 
+/** Film: YouTube (video lunghi) e Internet Archive (classici di pubblico dominio). */
+function filmShelves() {
+  const yt = (q) => async () => (await api('search', { q, type: 'long' }, 3600000)).items;
+  const ia = (params = {}) => async () => (await api('films', params, 3600000)).items;
+  return [
+    { title: 'Film completi su YouTube', style: 'wide', music: false, queue: false, load: yt('film completo italiano') },
+    { title: 'Commedie', style: 'wide', music: false, queue: false, load: yt('film commedia completo italiano') },
+    { title: 'Azione e avventura', style: 'wide', music: false, queue: false, load: yt('film azione completo in italiano') },
+    { title: 'Animazione', style: 'wide', music: false, queue: false, load: yt('film animazione completo italiano') },
+    { title: 'Documentari', style: 'wide', music: false, queue: false, load: yt('documentario completo italiano') },
+    { title: 'Classici gratuiti (Internet Archive)', style: 'wide', music: false, queue: false, load: ia() },
+    { title: "Film italiani d'archivio", style: 'wide', music: false, queue: false, load: ia({ extra: 'language:(Italian OR ita)' }) },
+    { title: "Noir e gialli d'epoca", style: 'wide', music: false, queue: false, load: ia({ extra: 'subject:(noir)' }) },
+  ];
+}
+
+async function playFilm(v) {
+  if (isHouse()) return toast('I film si guardano su questo dispositivo: scegli 🎧 "Questo dispositivo" come uscita', 5000);
+  try {
+    toast('🎬 Apro «' + v.title + '»…');
+    const d = await api('filmurl', { id: v.id }, 3600000);
+    playQueue([{ ...v, url: d.url }], 0, false, 'Film');
+  } catch (e) {
+    toast(e.message, 5000);
+  }
+}
+
 const RADIO_SEARCH_TILE = { id: 'radio-search', title: '🔍 Cerca una radio', author: 'Per nome o città', kind: 'RADIO' };
 
 function radioShelves() {
@@ -821,7 +848,7 @@ async function viewHome(args, token) {
   const filter = args.filter || 'all';
   const view = $('#view');
   const m = musicShelves(), v = videoShelves();
-  let shelves = filter === 'music' ? m : filter === 'video' ? v : filter === 'live' ? liveShelves() : filter === 'radio' ? radioShelves()
+  let shelves = filter === 'music' ? m : filter === 'video' ? v : filter === 'live' ? liveShelves() : filter === 'radio' ? radioShelves() : filter === 'film' ? filmShelves()
     : [...m.slice(0, 2), v[0], ...m.slice(2), ...v.slice(1)];
   // in cima: le tue playlist, poi visti/ascoltati di recente, poi il resto (come nell'app)
   const first = ['Le tue playlist', 'Visti di recente', 'Ascoltati di recente'];
@@ -829,7 +856,7 @@ async function viewHome(args, token) {
   view.innerHTML = `
     ${filter === 'all' ? `<h1>${greeting()} 🎧</h1>` : ''}
     <div class="chips">
-      ${[['all', 'Tutti'], ['music', 'Musica'], ['video', 'Video'], ['live', '🔴 Live'], ['radio', '📻 Radio']].map(([k, l]) => `<button class="chip ${k === filter ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
+      ${[['all', 'Tutti'], ['music', 'Musica'], ['video', 'Video'], ['live', '🔴 Live'], ['radio', '📻 Radio'], ['film', '🎬 Film']].map(([k, l]) => `<button class="chip ${k === filter ? 'active' : ''}" data-filter="${k}">${l}</button>`).join('')}
     </div>
     ${history.length === 0 && lib.artists.length === 0 ? '<p class="sub">Ascolta qualcosa e segui i tuoi artisti: la home imparerà i tuoi gusti.</p>' : ''}
     ${shelves.map((s, i) => `<section class="shelf" id="shelf${i}"><div class="shelf-head"><h2>${esc(s.title)}</h2></div>${loadingHTML('')}</section>`).join('')}`;
@@ -853,7 +880,7 @@ async function viewSearch(args, token) {
   const input = $('#searchInput');
   if (input.value !== q) input.value = q;
   setTimeout(() => input.focus(), 0);
-  const types = [['songs', 'Brani'], ['artists', 'Artisti'], ['playlists', 'Playlist'], ['videos', 'Video'], ['channels', 'Canali'], ['live', '🔴 Live'], ['radio', '📻 Radio']];
+  const types = [['songs', 'Brani'], ['artists', 'Artisti'], ['playlists', 'Playlist'], ['videos', 'Video'], ['channels', 'Canali'], ['live', '🔴 Live'], ['radio', '📻 Radio'], ['film', '🎬 Film']];
   const view = $('#view');
   view.innerHTML = `
     <div class="chips">${types.map(([k, l]) => `<button class="chip ${k === type ? 'active' : ''}" data-type="${k}">${l}</button>`).join('')}</div>
@@ -865,13 +892,15 @@ async function viewSearch(args, token) {
     return;
   }
   try {
-    const d = type === 'radio' ? await api('radio', { mode: 'search', q }, 600000) : await api('search', { q, type }, 600000);
+    const d = type === 'radio' ? await api('radio', { mode: 'search', q }, 600000)
+      : type === 'film' ? { items: [...(await api('search', { q: q + ' film completo', type: 'long' }, 600000).catch(() => ({ items: [] }))).items, ...(await api('films', { q }, 600000).catch(() => ({ items: [] }))).items] }
+      : await api('search', { q, type }, 600000);
     if (stale(token)) return;
     const items = d.items || [];
     const box = $('#results');
     if (!items.length) return (box.innerHTML = '<div class="empty">Nessun risultato</div>');
     if (type === 'songs') box.innerHTML = tracksHTML(items);
-    else if (type === 'videos' || type === 'live') box.innerHTML = gridHTML(items, { style: 'wide', music: false, queue: type !== 'live' });
+    else if (type === 'videos' || type === 'live' || type === 'film') box.innerHTML = gridHTML(items, { style: 'wide', music: false, queue: type === 'videos' });
     else box.innerHTML = gridHTML(items, { queue: false });
   } catch (e) {
     if (!stale(token)) $('#results').innerHTML = errorHTML(e);
@@ -1128,6 +1157,7 @@ function openItem(listId, idx, forcePlay = false) {
   const id = String(v.id);
   if (id === 'radio-search') return askRadioSearch();
   if (v.kind === 'RADIO') return playRadio(v);
+  if (v.kind === 'FILM') return playFilm(v);
   if (v.kind === 'PLAYLIST' || v.kind === 'ARTIST' || v.kind === 'CHANNEL') { touchRecent(recentKey(v)); lastSource = v.kind === 'PLAYLIST' ? 'Playlist «' + v.title + '»' : v.title; }
   if (id === 'tile:mix') {
     if (forcePlay) return buildMix().then((items) => items.length && playQueue(items, 0, true, 'Il mio mix'));
@@ -1263,6 +1293,11 @@ function showItemMenu(l, idx, x, y) {
   const id = String(v.id);
   const entries = [];
   if (id.startsWith('tile:') || id === 'radio-search') return;
+  if (v.kind === 'FILM') {
+    entries.push({ label: '▶ Guarda il film', run: () => playFilm(v) });
+    entries.push({ label: '↗ Apri su archive.org', run: () => window.open('https://archive.org/details/' + id.slice(5), '_blank') });
+    return showMenu(entries, x, y);
+  }
   if (v.kind === 'RADIO') {
     entries.push({ label: '▶ Ascolta', run: () => playRadio(v) });
     entries.push({ label: isRadioFav(v.id) ? 'Rimuovi dalle radio preferite' : '❤ Aggiungi alle radio preferite', run: () => { toggleRadioFav(v); render(); } });
@@ -1490,16 +1525,17 @@ function playCurrent() {
   pl.offset = 0;
   pl.lastProgress = Date.now();
   const m = media();
-  m.src = v.kind === 'RADIO' ? radioSrc(v) : srcFor(v, pl.music ? 'audio' : 'video');
+  m.src = v.kind === 'RADIO' ? radioSrc(v) : v.kind === 'FILM' ? v.url : srcFor(v, pl.music ? 'audio' : 'video');
   m.play().catch(() => { /* serve un tocco dell'utente */ });
   updateNowPlaying();
-  if (v.kind !== 'RADIO' && pl.idx >= pl.queue.length - 2) extendQueue();
+  if (v.kind !== 'RADIO' && v.kind !== 'FILM' && pl.idx >= pl.queue.length - 2) extendQueue();
 }
 
 function onMediaError() {
   const v = currentItem();
   if (!v || isHouse()) return;
   const m = media();
+  if (v.kind === 'FILM') return toast('Il film non si apre: riprova o scegline un altro', 5000);
   if (!pl.music && m.src.includes('/video/')) {
     toast('Video non disponibile: riproduco solo l\'audio');
     m.src = srcFor(v, 'audio');
@@ -1538,7 +1574,7 @@ setInterval(() => {
 function next(auto = false) {
   if (!pl.queue.length) return;
   if (isHouse()) return houseCmd('next');
-  if (currentItem() && currentItem().kind === 'RADIO') return; // la radio non ha un "successivo"
+  if (currentItem() && (currentItem().kind === 'RADIO' || currentItem().kind === 'FILM')) return; // niente "successivo"
   if (auto && pl.repeat) {
     media().currentTime = 0;
     media().play();
