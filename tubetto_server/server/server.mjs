@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.4';
+const VERSION = '1.5.6';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -522,9 +522,11 @@ async function playHouseVideo(idx) {
   const title = [it.author, it.title].filter(Boolean).join(' - ') || it.id;
   const fallback = [];
   for (const p of hv.tv) {
-    const ent = hv.vmap[p];
-    let url = null, type = null;
-    try {
+    // provo la TV scelta e, se rifiuta il link, le altre entità della stessa TV (Cast, DLNA…)
+    const cands = await house.videoCandidates(p, hv.vmap[p]);
+    let done = false, lastErr = null;
+    for (const ent of cands) {
+      let url = null, type = null;
       if (mode === 'video') {
         // stream unico di YouTube (MP4 normale con lunghezza): lo leggono sia Cast sia DLNA, e si può saltare
         try { const src = await resolve(it.id, 'video', false); if (!src.hls) { url = await videoUrl(it); type = 'video/mp4'; } } catch (e) { /* flusso preparato */ }
@@ -534,15 +536,23 @@ async function playHouseVideo(idx) {
         const sid = tvTsUrlSession(itx, mode, ent);
         if (house.isCast(ent)) { url = `${base}/tvmp4/${sid}.mp4`; type = 'video/mp4'; } else { url = `${base}/tvts/${sid}.ts`; type = 'video/mpeg'; }
       }
-      log('[tv]', mode, it.id, '→', ent, house.isCast(ent) ? '(Cast)' : '(DLNA)', type, url);
-      await house.playVideo(ent, url, title, thumb, type);
-      house.routeVideo(p, ent);
-    } catch (e) {
-      // l'entità non accetta link (es. integrazione Sony Bravia): la escludo e la stanza riceve via Music Assistant
-      if (!/Invalid media type|does not support|not supported/i.test(e.message)) throw e;
-      house.noUrl.add(ent);
-      log('[casa]', ent, 'non accetta link video:', e.message);
-      if (p !== ent) fallback.push(p); else throw new Error(`${p} non può ricevere video da un link: scegli un'altra uscita`);
+      log('[tv]', mode, it.id, '→', ent, house.isCast(ent) ? '(Cast)' : '(DLNA/altro)', type, url);
+      try {
+        await house.playVideo(ent, url, title, thumb, type);
+        hv.vmap[p] = ent;
+        house.routeVideo(p, ent);
+        done = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (!/Invalid media type|only accept|does not support|not supported/i.test(e.message)) throw e;
+        house.noUrl.add(ent);
+        log('[tv]', ent, 'non accetta il video, provo un\'altra entità della stessa TV:', e.message);
+      }
+    }
+    if (!done) {
+      log('[tv] nessuna entità di', p, 'accetta il video:', lastErr ? lastErr.message : 'nessuna trovata');
+      if (p !== hv.vmap[p]) fallback.push(p); else throw new Error(`${p} non può ricevere video: ${lastErr ? lastErr.message : 'nessuna entità adatta'}`);
     }
   }
   if (fallback.length) {
@@ -576,7 +586,12 @@ async function splitPlayers(players, video) {
     if (video && video[p]) vmap[p] = video[p];
     else if (house.notMa.has(p) || (ma.size && !ma.has(p))) vmap[p] = p;
   }
-  return { vmap, tv: players.filter((p) => vmap[p]), rest: players.filter((p) => !vmap[p]) };
+  const tv = players.filter((p) => vmap[p]);
+  // stessa TV scelta due volte (es. Music Assistant + Cast): solo il video, niente audio di Music Assistant sopra
+  const root = (id) => String(id || '').replace(/^media_player\./, '').replace(/_\d+$/, '');
+  const tvRoots = new Set(tv.flatMap((p) => [root(p), root(vmap[p])]));
+  const rest = players.filter((p) => !vmap[p] && !tvRoots.has(root(p)));
+  return { vmap, tv, rest };
 }
 
 async function houseRadio(players, radioIt, video) {

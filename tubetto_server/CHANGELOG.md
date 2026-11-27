@@ -1,3 +1,15 @@
+# 1.5.6
+- "Dashboard displays only accept the media content type dashboard": se l'entità scelta per la TV rifiuta il video,
+  Tubetto Server prova da solo le altre entità della stessa TV (prima Google Cast, poi DLNA) e ricorda quale
+  funziona. Nel Registro le righe [tv] mostrano ogni tentativo.
+
+# 1.5.5
+- 📺 Solo audio con l'icona di Music Assistant sulla TV: erano scelte due uscite della stessa TV (Music Assistant e
+  Cast) e l'audio di Music Assistant copriva il video. Ora la stessa TV (entity_id con la stessa radice, es.
+  sony_kd_43xh8096 e sony_kd_43xh8096_3) è una sola voce e riceve solo il video.
+- Le uscite che non esistono più vengono tolte dalla scelta.
+- In casa, il tasto 🎬 del player passa sulla TV dalla copertina al video di YouTube del brano in corso (e ritorno).
+
 # 1.5.4
 - 📺 Google Cast: niente più HLS (la TV partiva dal "bordo" del flusso, si fermava e chiudeva il video).
   Ora riceve l'MP4 di YouTube (con lunghezza, si può saltare) o, se non c'è, un MP4 continuo come nel browser;

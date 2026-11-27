@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.4';
+const APP_VERSION = '1.5.6';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1968,7 +1968,7 @@ async function houseSend() {
   try {
     const video = {};
     for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false) });
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false) || !!pl.tvVideoNow });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));
@@ -2032,6 +2032,8 @@ function refreshOutputButton() {
 async function showOutputMenu(x, y) {
   try {
     housePlayers = (await api('house/players')).players || [];
+    const okIds = new Set(housePlayers.map((p) => p.id));
+    if (housePlayers.length && pl.players.some((id) => !okIds.has(id))) { pl.players = pl.players.filter((id) => okIds.has(id)); LS.set('housePlayers', pl.players); }
   } catch (e) {
     toast('Stanze non disponibili: ' + e.message, 4000);
     housePlayers = [];
@@ -2174,6 +2176,13 @@ function bind() {
 
   const vp = $('#videoPanel');
   $('#pbVideo').addEventListener('click', () => {
+    // in casa con una TV: passa dalla copertina al video di YouTube (e ritorno) sul brano in corso
+    if (isHouse() && pl.players.some((id) => (housePlayers.find((p) => p.id === id) || {}).video)) {
+      pl.tvVideoNow = !pl.tvVideoNow;
+      toast(pl.tvVideoNow ? '📺 Sulla TV: video di YouTube' : '📺 Sulla TV: copertina');
+      if (currentItem()) houseSend();
+      if (!bothLocal()) return;
+    }
     if (vp.classList.contains('off')) {
       vp.classList.remove('off');
       if (pl.music) LS.set('hideVideoForMusic', false);
@@ -2303,7 +2312,13 @@ async function start() {
   initMedia();
   refreshOutputButton();
   // stanze (servono per sapere quali TV possono mostrare il video)
-  api('house/players').then((d) => { housePlayers = d.players || []; }).catch(() => null);
+  api('house/players').then((d) => {
+    housePlayers = d.players || [];
+    // stanze che non esistono più (vecchi doppioni): le tolgo dalla scelta
+    const ok = new Set(housePlayers.map((p) => p.id));
+    const keep = pl.players.filter((id) => ok.has(id));
+    if (housePlayers.length && keep.length !== pl.players.length) { pl.players = keep; LS.set('housePlayers', keep); refreshOutputButton(); }
+  }).catch(() => null);
   try {
     const sc = await api('config');
     if (sc.repo && !LS.get('cfg', {}).repoSet) cfg.repo = sc.repo;

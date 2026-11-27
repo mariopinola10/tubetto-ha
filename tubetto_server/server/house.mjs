@@ -94,11 +94,15 @@ export async function players() {
     const score = (x) => (x.state === 'playing' ? 3 : 0) + (x.state !== 'unavailable' ? 2 : 0) + (/airplay|dlna|upnp/i.test(x.entity_id) ? 0 : 1);
     if (!cur || score(s) > score(cur)) byName.set(k, s);
   }
+  // stessa TV in integrazioni diverse: entity_id con la stessa radice (sony_kd_43xh8096, _2, _3…)
+  const root = (id) => String(id).replace(/^media_player\./, '').replace(/_\d+$/, '');
+  const sameTv = (a, b) => root(a.entity_id) === root(b.entity_id);
   // TV senza un player di Music Assistant con lo stesso nome: compaiono da sole e ricevono via Cast
   if (ids.length) {
     for (const v of videoCapable) {
       const k = norm(nameOf(v));
       if (v.state === 'unavailable' || byName.has(k) || [...byName.keys()].some((n) => n.includes(k) || k.includes(n))) continue;
+      if ([...byName.values()].some((x) => sameTv(x, v))) continue;
       byName.set(k, v);
     }
   }
@@ -106,7 +110,7 @@ export async function players() {
     musicAssistant: ids.length > 0,
     players: [...byName.values()].map((s) => {
       const k = norm(nameOf(s));
-      const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
+      const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => sameTv(x, s)) || videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
       return {
         id: s.entity_id,
         name: nameOf(s).replace(/\s*♪\s*$/, ''),
@@ -126,6 +130,23 @@ export const noUrl = new Set();
 let castIds = new Set();
 
 export function isCast(entity) { return castIds.has(entity); }
+
+/**
+ * Entità che possono mostrare il video di questa stanza: quella scelta e le altre della stessa TV
+ * (stessa radice dell'entity_id o stesso nome), Google Cast per prime, poi DLNA.
+ */
+export async function videoCandidates(player, chosen) {
+  const urlOk = await urlPlayers();
+  const states = await ha('GET', '/states');
+  const root = (id) => String(id || '').replace(/^media_player\./, '').replace(/_\d+$/, '');
+  const byId = new Map(states.map((x) => [x.entity_id, x]));
+  const nm = (id) => String(((byId.get(id) || {}).attributes || {}).friendly_name || '').toLowerCase().replace(/\b(di|del|dello|della)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const roots = new Set([root(player), root(chosen)]);
+  const names = new Set([nm(player), nm(chosen)].filter(Boolean));
+  const list = [...urlOk].filter((e) => e !== chosen && !noUrl.has(e) && (roots.has(root(e)) || names.has(nm(e))) && (byId.get(e) || {}).state !== 'unavailable')
+    .sort((a, b) => (castIds.has(b) ? 1 : 0) - (castIds.has(a) ? 1 : 0));
+  return [chosen, ...list].filter((e) => e && !noUrl.has(e));
+}
 
 /** Entità che riproducono un link: Google Cast per prime, poi DLNA. */
 export async function refreshUrlPlayers() { return urlPlayers(); }
