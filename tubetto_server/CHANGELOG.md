@@ -1,3 +1,12 @@
+# 1.5.1
+- Video nero nel browser: YouTube rifiutava il link diretto dopo che Tubetto Server aveva già risposto (0 byte).
+  Ora il primo pezzo si controlla prima; se è rifiutato si passa a video e audio separati uniti da ffmpeg.
+- TV: se la copertina non si prepara (audio non disponibile) si prova il video, e viceversa; nel Registro la riga [tv]
+  mostra il link mandato alla TV.
+- Impostazioni: "Link per le TV …/ping" per verificare dal telefono che la TV possa raggiungere Tubetto Server.
+- I client YouTube non vengono più esclusi tutti insieme dopo un errore.
+- Arresto pulito all'aggiornamento/riavvio (niente più avviso SIGTERM).
+
 # 1.5.0
 - 📺 TV: arriva sempre un'immagine. I video di YouTube sono preparati come HLS H.264+AAC (il formato che Google Cast
   legge meglio); la musica arriva come video "badge" con copertina, titolo e artista. Se il video non è disponibile

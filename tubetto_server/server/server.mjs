@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -242,6 +242,22 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
     res.writeHead(416, { 'Content-Range': `bytes */${total}` });
     return res.end();
   }
+  // video: controllo il primo pezzo PRIMA di rispondere. Se YouTube rifiuta il link diretto
+  // (risposta vuota = schermo nero) passo a video+audio separati uniti da ffmpeg.
+  let first = null;
+  if (kind === 'video' && req.method !== 'HEAD') {
+    try {
+      first = await fetch(`${src.url}&range=${start}-${Math.min(start + 1024 * 1024 - 1, end)}`, { headers: { 'User-Agent': src.ua }, signal: AbortSignal.timeout(15000) });
+    } catch (e) { first = null; }
+    if (!first || !first.ok) {
+      if (first) await first.arrayBuffer().catch(() => null);
+      log('[video]', videoId, 'link diretto rifiutato', first ? 'HTTP ' + first.status : '', ': unisco video e audio separati');
+      reportBroken(videoId, 'video', src.via);
+      try { await resolve(videoId, 'vonly', false); return proxyMerged(req, res, videoId, startAt); } catch (e) {
+        return sendJson(res, 404, { error: 'Video non disponibile: ' + e.message });
+      }
+    }
+  }
   const headers = {
     'Content-Type': src.mime,
     'Accept-Ranges': 'bytes',
@@ -262,7 +278,7 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
   while (pos <= end && !res.destroyed) {
     const to = Math.min(pos + CHUNK - 1, end);
     let r;
-    try {
+    if (first) { r = first; first = null; } else try {
       r = await fetch(`${src.url}&range=${pos}-${to}`, { headers: { 'User-Agent': src.ua }, signal: ac.signal });
     } catch (e) {
       break;
@@ -394,8 +410,10 @@ async function startTvHls(it, mode, entity) {
     if (ff.exitCode !== null && ff.exitCode !== 0) throw new Error('preparazione per la TV non riuscita: ' + (err.trim().split('\n').pop() || 'ffmpeg'));
     try { if (/\.ts/.test(fs.readFileSync(idx, 'utf8'))) break; } catch (e) { /* non ancora */ }
   }
-  log('[tv]', mode === 'video' ? 'video' : 'badge', it.id, '→', entity);
-  return `${await lanBaseUrl()}/hls/${sid}/index.m3u8`;
+  if (ff.exitCode !== null && ff.exitCode !== 0) throw new Error('preparazione per la TV non riuscita: ' + (err.trim().split('\n').pop() || 'ffmpeg'));
+  const u = `${await lanBaseUrl()}/hls/${sid}/index.m3u8`;
+  log('[tv]', mode === 'video' ? 'video' : 'badge', it.id, '→', entity, u);
+  return u;
 }
 
 async function lanBaseUrl() {
@@ -437,11 +455,18 @@ async function playHouseVideo(idx) {
   const ents = hv.tv.map((p) => hv.vmap[p]).join(',');
   let u;
   try { u = await startTvHls(it, audio ? 'badge' : 'video', ents); } catch (e) {
-    if (audio) throw e;
+    if (audio) {
+      // badge non riuscito (audio non disponibile): provo con il video di YouTube
+      log('[tv] copertina non riuscita per', it.id, '(' + e.message + '): provo il video');
+      killTvSessions(hv.tv.map((p) => hv.vmap[p]));
+      u = await startTvHls(it, 'video', ents);
+      audio = false;
+    } else {
     log('[tv] video non riuscito per', it.id, '(' + e.message + '): mando copertina e audio');
     audio = true;
     killTvSessions(hv.tv.map((p) => hv.vmap[p]));
     u = await startTvHls(it, 'badge', ents);
+    }
   }
   const fallback = [];
   for (const p of hv.tv) {
@@ -545,6 +570,9 @@ const server = http.createServer(async (req, res) => {
       return await proxy(req, res, id, kind === 'video' ? 'video' : kind === 'vraw' ? 'vonly' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
 
+    // prova di raggiungibilità dalla rete di casa (per capire se la TV arriva al server)
+    if (p === '/ping') return sendJson(res, 200, { ok: true, server: 'Tubetto Server', version: VERSION });
+
     // HLS preparato per le TV (link con codice casuale, valido finché dura la riproduzione)
     const hm = /^\/hls\/([0-9a-f]{16})\/([^/]+)$/.exec(p);
     if (hm) return serveHls(req, res, hm[1], hm[2]);
@@ -564,7 +592,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (op === 'ping') return sendJson(res, 200, { ok: true, version: VERSION });
       if (op === 'prefetch') { prefetch(url.searchParams.get('id')); return sendJson(res, 200, { ok: true }); }
-      if (op === 'status') return sendJson(res, 200, { version: VERSION, config: configInfo, stream: getStats(), streamBase: STREAM_BASE });
+      if (op === 'status') {
+        let tvBase = '';
+        try { tvBase = await lanBaseUrl(); } catch (e) { tvBase = '❌ ' + e.message; }
+        return sendJson(res, 200, { version: VERSION, config: configInfo, stream: getStats(), streamBase: STREAM_BASE, tvBase });
+      }
 
       // ---- allineamento con l'app: radio, testi, Spotify, accesso con account
       if (op === 'radio') return sendJson(res, 200, await runOp('radio', url.searchParams));
@@ -682,3 +714,12 @@ refreshConfig();
 setInterval(refreshConfig, 3 * 3600 * 1000);
 updateYtdlp();
 setInterval(updateYtdlp, 24 * 3600 * 1000);
+
+// arresto pulito (Home Assistant manda SIGTERM all'aggiornamento/riavvio)
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    killTvSessions(null);
+    server.close();
+    process.exit(0);
+  });
+}

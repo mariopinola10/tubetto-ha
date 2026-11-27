@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1433,6 +1433,7 @@ function openSettings() {
       s.innertubeDown ? 'YouTube blocca le richieste dirette: uso yt-dlp con PO token' : '',
       s.cookies ? 'Cookie account: attivi' : '',
       `Stream per Music Assistant: ${st.streamBase}`,
+      st.tvBase ? `Link per le TV: ${st.tvBase}/ping  (aprilo dal telefono in Wi-Fi: se non risponde, la TV non lo raggiunge)` : '',
     ].filter(Boolean).join('\n');
   }).catch((e) => { $('#testResult').textContent = '❌ ' + e.message; });
   $('#sClose').onclick = closeModal;

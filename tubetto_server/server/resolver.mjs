@@ -373,6 +373,9 @@ async function fromYtdlp(videoId, kind) {
 }
 
 function markBad(key) {
+  // mai escluderli tutti: senza link diretti resterebbe solo l'HLS (più lento e senza salti avanti/indietro)
+  const others = order.filter((k) => k !== key && clients[k] && !(bad.get(k) > Date.now()));
+  if (!others.length) { console.log(`[stream] client ${key}: link interrotto, ma è l'ultimo rimasto e non lo escludo`); return; }
   if (!(bad.get(key) > Date.now())) console.log(`[stream] client ${key} escluso per 6 ore (link interrotti)`);
   bad.set(key, Date.now() + BAD_MS);
   if (preferred === key) preferred = null;
