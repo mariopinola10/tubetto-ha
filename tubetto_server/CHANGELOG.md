@@ -1,3 +1,9 @@
+# 1.6.2
+- Firestick: viene svegliata subito (prima dello script del salotto), poi si apre l'app Tubetto, si aspetta che
+  parta e solo allora si manda il video. Nel Registro le righe [firestick] mostrano ogni passaggio.
+- Gli script tubetto_*_accendi/_spegni partono con script.turn_on e Tubetto aspetta che finiscano (fino a 2 minuti):
+  niente più blocco quando lo script dura più di 20 secondi.
+
 # 1.6.1
 - ▶ su una TV spenta: Tubetto la accende (Sony Bravia o Android Debug Bridge della stessa stanza), aspetta che
   Google Cast/DLNA risponda e poi manda il video.

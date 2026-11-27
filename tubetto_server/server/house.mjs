@@ -178,11 +178,13 @@ const adbCmd = (entity, command) => service('androidtv', 'adb_command', { entity
 /** Accende la TV, la porta sull'HDMI della Firestick e apre il video nell'app Tubetto. */
 export async function firestickPlay(entity, it) {
   const f = (await firesticks()).find((x) => x.entity === entity) || { entity, name: entity, tv: fsOpts.firestick_tv || '' };
+  // sveglio subito la Firestick, così è pronta quando la TV è sull'ingresso giusto
+  await adbCmd(entity, 'input keyevent 224').catch((e) => console.log('[firestick] sveglia non riuscita:', e.message));
   const script = await roomScript(f.name, 'accendi');
   if (script) {
-    // sequenza personalizzata (es. TV, macro, ingresso Firestick, HDMI 1 con le pause giuste)
-    console.log('[firestick] accendo con', script);
-    await service('script', script.replace('script.', ''), {}).catch((e) => console.log('[firestick] script non riuscito:', e.message));
+    // sequenza personalizzata (es. macro, sorgente Firestick, TV, HDMI 1)
+    console.log('[firestick] preparo il salotto con', script);
+    await runScript(script).catch((e) => console.log('[firestick] script non riuscito:', e.message));
   } else if (f.tv) {
     const tvState = await ha('GET', '/states/' + f.tv).catch(() => null);
     if (isOff(tvState)) {
@@ -196,19 +198,24 @@ export async function firestickPlay(entity, it) {
     await service('media_player', 'select_source', { entity_id: f.tv, source: src }).catch((e) => console.log('[firestick] cambio ingresso non riuscito:', e.message));
   }
   const before = await ha('GET', '/states/' + entity).catch(() => null);
-  const running = before && before.attributes && before.attributes.app_id === APP_PKG && !isOff(before);
-  await adbCmd(entity, 'input keyevent 224').catch(() => null); // sveglia la Firestick
+  const running = before && before.attributes && before.attributes.app_id === APP_PKG;
+  await adbCmd(entity, 'input keyevent 224').catch(() => null);
+  if (!running) {
+    // apro l'app e le do il tempo di partire, poi le mando il video
+    console.log('[firestick] apro l\'app Tubetto');
+    await adbCmd(entity, `am start -n ${APP_PKG}/.ui.MainActivity`).catch((e) => console.log('[firestick] apertura app non riuscita:', e.message));
+    await sleep(6000);
+  }
   const open = () => adbCmd(entity, `am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT https://youtu.be/${it.id} -n ${APP_PKG}/.ui.MainActivity`);
+  console.log('[firestick] mando il video', it.id);
   await open();
-  // app appena aperta: il primo invio può arrivare prima che sia pronta, lo ripeto
-  if (!running) { await sleep(7000); await open().catch(() => null); }
 }
 
 export async function firestickOff(entity) {
   const f = (await firesticks()).find((x) => x.entity === entity) || { entity, name: entity, tv: fsOpts.firestick_tv || '' };
   await adbCmd(entity, 'input keyevent 86').catch(() => null);
   const script = await roomScript(f.name, 'spegni');
-  if (script) { console.log('[firestick] spengo con', script); return service('script', script.replace('script.', ''), {}); }
+  if (script) { console.log('[firestick] spengo con', script); return runScript(script); }
   await adbCmd(entity, 'input keyevent 223').catch(() => null); // Firestick a riposo
   if (f.tv) await service('media_player', 'turn_off', { entity_id: f.tv }).catch(() => null);
 }
@@ -411,6 +418,18 @@ export const roomSlug = (n) => slug(n);
 const slug = (n) => String(n || '').toLowerCase().replace(/\(.*?\)/g, ' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
+/** Avvia lo script e aspetta che finisca (fino a 2 minuti), senza bloccare la chiamata HTTP. */
+async function runScript(id) {
+  await service('script', 'turn_on', { entity_id: id });
+  await sleep(1000);
+  for (let i = 0; i < 120; i++) {
+    const st = await ha('GET', '/states/' + id).catch(() => null);
+    if (!st || st.state !== 'on') return;
+    await sleep(1000);
+  }
+  console.log('[tv] lo script', id, 'è ancora in corso dopo 2 minuti: vado avanti');
+}
+
 /** Script personalizzato della stanza, se esiste: script.tubetto_<nome stanza>_accendi / _spegni. */
 async function roomScript(roomName, action) {
   const id = `script.tubetto_${slug(roomName)}_${action}`;
@@ -447,7 +466,7 @@ export async function powerOn(roomName, videoEnt) {
   const script = await roomScript(roomName, 'accendi');
   if (script) {
     console.log('[tv] accendo', roomName, 'con', script);
-    await service('script', script.replace('script.', ''), {}).catch((e) => console.log('[tv] script non riuscito:', e.message));
+    await runScript(script).catch((e) => console.log('[tv] script non riuscito:', e.message));
   } else {
     const vs = videoEnt ? await ha('GET', '/states/' + videoEnt).catch(() => null) : null;
     const pe = await powerEntity(roomName, videoEnt);
@@ -473,7 +492,7 @@ export async function powerOff(roomName, videoEnt) {
   const script = await roomScript(roomName, 'spegni');
   if (script) {
     console.log('[tv] spengo', roomName, 'con', script);
-    return service('script', script.replace('script.', ''), {});
+    return runScript(script);
   }
   const pe = await powerEntity(roomName, videoEnt);
   if (pe) await service('media_player', 'turn_off', { entity_id: pe }).catch((e) => console.log('[tv] spegnimento non riuscito:', e.message));
