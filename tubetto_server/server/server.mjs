@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.6';
+const VERSION = '1.4.7';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -137,6 +137,11 @@ function proxyHls(req, res, src, kind, startAt) {
   const args = ['-nostdin', '-loglevel', 'error', '-user_agent', src.ua, '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5'];
   if (startAt > 0) args.push('-ss', String(startAt));
   args.push('-i', src.url);
+  if (kind === 'video' && src.audioUrl) {
+    // video e audio in due flussi separati: li unisco
+    if (startAt > 0) args.push('-ss', String(startAt));
+    args.push('-user_agent', src.ua, '-reconnect', '1', '-reconnect_streamed', '1', '-i', src.audioUrl, '-map', '0:v:0', '-map', '1:a:0');
+  }
   if (kind === 'video') args.push('-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1');
   else args.push('-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1');
   const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -496,14 +501,17 @@ const server = http.createServer(async (req, res) => {
           await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));
           return sendJson(res, 200, { ok: true });
         }
+        if (b.cmd === 'stop') { houseVideo = null; }
+        let r = null;
         try {
-          await house.command(pls, b.cmd, b.value);
+          r = await house.command(pls, b.cmd, b.value);
         } catch (e) {
-          // Music Assistant ha svuotato la coda (TV spenta, brano finito…): rimando la coda da dove eravamo
           if (!/queue is empty/i.test(e.message)) throw e;
-          if (b.cmd === 'play' && houseVideo) await playHouseVideo(houseVideo.idx);
-          else if (b.cmd === 'play' && houseIds.length) await house.play(pls, houseIds.map((id) => streamUrl({ id })));
-          else if (b.cmd !== 'pause' && b.cmd !== 'stop') throw new Error('Niente in riproduzione su questa stanza: rimanda il brano');
+        }
+        // "play" non supportato dalla TV o coda svuotata: rimando il brano da dove eravamo
+        if (b.cmd === 'play' && (!r || r.unsupported)) {
+          if (houseVideo) await playHouseVideo(houseVideo.idx);
+          else if (houseIds.length) await house.play(pls, houseIds.map((id) => streamUrl({ id })));
         }
         return sendJson(res, 200, { ok: true });
       }

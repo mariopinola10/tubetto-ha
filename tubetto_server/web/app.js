@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.6';
+const APP_VERSION = '1.4.7';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1542,8 +1542,8 @@ function initMedia() {
 }
 
 function refreshPlayButton() {
-  const playing = isHouse() ? !!(pl.house && pl.house.state === 'playing') : pl.playing;
-  $('#pbPlay').textContent = playing ? '⏸' : '▶';
+  const playing = isHouse() ? !!pl.houseActive : pl.playing;
+  $('#pbPlay').textContent = isHouse() ? (playing ? '⏹' : '▶') : playing ? '⏸' : '▶';
   const v = currentItem();
   document.title = (playing ? '▶ ' : '') + (v ? v.title + ' — Tubetto' : 'Tubetto');
 }
@@ -1739,9 +1739,14 @@ function enqueue(v) {
 function togglePlay() {
   if (!currentItem()) return;
   if (isHouse()) {
-    const playing = pl.house && pl.house.state === 'playing';
-    if (bothLocal()) { if (playing) media().pause(); else media().play().catch(() => null); }
-    return houseCmd(playing ? 'pause' : 'play');
+    // in casa il tasto ferma tutto o rimanda il brano alle uscite scelte (le TV non sempre hanno pausa/play)
+    if (pl.houseActive) {
+      pl.houseActive = false;
+      if (bothLocal()) media().pause();
+      refreshPlayButton();
+      return houseCmd('stop');
+    }
+    return houseSend();
   }
   const m = media();
   if (m.paused) m.play().catch(() => null);
@@ -1967,6 +1972,8 @@ async function houseSend() {
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));
     renderQueue();
+    pl.houseActive = true;
+    refreshPlayButton();
     toast(`🏠 In riproduzione in ${playerNames()}`);
     const v = currentItem();
     if (v) recordListen(v, pl.music);
@@ -2057,7 +2064,7 @@ async function showOutputMenu(x, y) {
       },
     })),
     '-',
-    { label: '⏹ Ferma la musica in casa', run: () => houseCmd('stop') },
+    { label: '⏹ Ferma la musica in casa', run: () => { pl.houseActive = false; refreshPlayButton(); houseCmd('stop'); } },
     {
       label: '🏠 Suona nelle stanze scelte',
       run: () => {

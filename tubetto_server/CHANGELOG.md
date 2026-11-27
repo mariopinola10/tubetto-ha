@@ -1,3 +1,10 @@
+# 1.4.7
+- Video neri (solo audio) nel browser e sulla TV: si sceglie solo video H.264, quello che leggono tutti; se YouTube
+  dà video e audio separati, ffmpeg li unisce.
+- In casa il tasto ▶/⏹ ferma tutte le uscite scelte o rimanda il brano corrente (niente più "does not support
+  action media_player.media_play" con le TV che non hanno play/pausa).
+- Comandi verso più uscite: se una non supporta un comando, le altre lo ricevono comunque.
+
 # 1.4.6
 - Risolto di nuovo "does not support action music_assistant.play_media": i player di Music Assistant si riconoscono
   anche dagli attributi; una stanza rifiutata da Music Assistant viene segnata e ritentata subito via Cast.

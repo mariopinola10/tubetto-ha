@@ -186,18 +186,40 @@ async function playOne(player, urls) {
   }
 }
 
+/** Un servizio per ogni entità: se una non lo supporta (es. TV senza "play") non blocca le altre. */
+async function each(entities, name, data = {}) {
+  let unsupported = 0, last = null;
+  for (const e of [...new Set(entities)]) {
+    try { await service('media_player', name, { entity_id: e, ...data }); } catch (err) {
+      last = err;
+      if (/does not support action/i.test(err.message)) unsupported++;
+      else if (!/queue is empty/i.test(err.message)) throw err;
+    }
+  }
+  return { unsupported, last };
+}
+
 export async function command(players, cmd, value) {
-  const leader = players[0] && target(players[0]);
-  if (!leader) throw new Error('Nessuna stanza scelta');
+  if (!players[0]) throw new Error('Nessuna stanza scelta');
+  const leader = target(players[0]);
   const all = players.map(target);
   switch (cmd) {
-    case 'play': return service('media_player', 'media_play', { entity_id: leader });
-    case 'pause': return service('media_player', 'media_pause', { entity_id: leader });
-    case 'next': return service('media_player', 'media_next_track', { entity_id: leader });
-    case 'previous': return service('media_player', 'media_previous_track', { entity_id: leader });
-    case 'stop': return service('media_player', 'media_stop', { entity_id: all });
-    case 'seek': return service('media_player', 'media_seek', { entity_id: leader, seek_position: Number(value) || 0 });
-    case 'volume': return service('media_player', 'volume_set', { entity_id: all, volume_level: Math.max(0, Math.min(1, Number(value))) });
+    case 'play': return each([leader], 'media_play');
+    case 'pause': {
+      const r = await each([leader], 'media_pause');
+      if (r.unsupported) await each([leader], 'media_stop');
+      return r;
+    }
+    case 'next': return each([leader], 'media_next_track');
+    case 'previous': return each([leader], 'media_previous_track');
+    case 'stop': {
+      // fermo sia la TV (Cast) sia il player di Music Assistant della stessa stanza
+      const r = await each([...all, ...players], 'media_stop');
+      clearVideo(players);
+      return r;
+    }
+    case 'seek': return each([leader], 'media_seek', { seek_position: Number(value) || 0 });
+    case 'volume': return each(all, 'volume_set', { volume_level: Math.max(0, Math.min(1, Number(value))) });
     case 'unjoin': return service('media_player', 'unjoin', { entity_id: players.slice(1) });
     default: throw new Error('Comando sconosciuto: ' + cmd);
   }

@@ -154,15 +154,30 @@ async function pickHls(masterUrl, ua, kind) {
     if (lines[i].startsWith('#EXT-X-STREAM-INF:')) {
       const a = parseAttrs(lines[i]);
       const uri = lines[i + 1];
-      if (uri && !uri.startsWith('#')) variants.push({ bw: Number(a.BANDWIDTH) || 0, h: Number((a.RESOLUTION || 'x0').split('x')[1]) || 0, uri: abs(uri) });
+      if (uri && !uri.startsWith('#')) variants.push({ bw: Number(a.BANDWIDTH) || 0, h: Number((a.RESOLUTION || 'x0').split('x')[1]) || 0, uri: abs(uri), codecs: a.CODECS || '', group: a.AUDIO || '' });
     }
   }
   if (!variants.length) return null;
   variants.sort((x, y) => x.h - y.h || x.bw - y.bw);
   // audio: le varianti 360p hanno AAC 128k; video: la migliore fino a 480p
   const target = kind === 'audio' ? 360 : 480;
-  const fit = variants.filter((v) => v.h <= target);
-  return (fit.length ? fit[fit.length - 1] : variants[0]).uri;
+  if (kind !== 'video') {
+    const fit = variants.filter((v) => v.h <= target);
+    return (fit.length ? fit[fit.length - 1] : variants[0]).uri;
+  }
+  // video: solo H.264 (avc1). VP9/AV1 nel browser o sulla TV danno schermo nero con il solo audio
+  const avc = variants.filter((v) => !v.codecs || /avc1/i.test(v.codecs));
+  const pool = avc.length ? avc : variants;
+  const fit = pool.filter((v) => v.h <= target);
+  const v = fit.length ? fit[fit.length - 1] : pool[0];
+  // video senza audio dentro: l'audio è una traccia a parte del gruppo indicato
+  let audio = null;
+  if (v.group || (v.codecs && !/mp4a|opus|ac-3|ec-3/i.test(v.codecs))) {
+    const am = lines.filter((l) => l.startsWith('#EXT-X-MEDIA:') && /TYPE=AUDIO/.test(l)).map(parseAttrs).filter((a) => a.URI && (!v.group || a['GROUP-ID'] === v.group));
+    const best = am.find((a) => a.DEFAULT === 'YES') || am[am.length - 1];
+    if (best) audio = abs(best.URI);
+  }
+  return { uri: v.uri, audio };
 }
 
 const kbps = (f) => (f.averageBitrate || f.bitrate || 0) / 1000;
@@ -265,10 +280,12 @@ async function fromInnertube(videoId, kind, preferItag) {
 
       // 3) HLS (es. client IOS): convertito al volo da ffmpeg
       if (sd.hlsManifestUrl) {
-        const media = await pickHls(sd.hlsManifestUrl, client.userAgent, kind);
+        let media = await pickHls(sd.hlsManifestUrl, client.userAgent, kind);
+        let audioUrl = null;
+        if (media && typeof media === 'object') { audioUrl = media.audio; media = media.uri; }
         if (media) {
           preferred = key;
-          return { hls: true, url: media, ua: client.userAgent, mime: kind === 'video' ? 'video/mp4' : 'audio/aac', via: 'innertube:' + key + ':hls', ...meta };
+          return { hls: true, url: media, audioUrl, ua: client.userAgent, mime: kind === 'video' ? 'video/mp4' : 'audio/aac', via: 'innertube:' + key + ':hls', ...meta };
         }
       }
       errors.push(`${key}: nessun formato utilizzabile`);
@@ -323,11 +340,23 @@ async function fromYtdlp(videoId, kind) {
   }
   // HLS: solo audio (233/234) o video fino a 480p
   let h;
-  if (kind === 'video') h = hls.filter(isMuxed).filter((x) => (x.height || 0) <= 480).sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+  let hAudio = null;
+  const avc = (x) => /^avc1/i.test(x.vcodec || '');
+  if (kind === 'video') {
+    const byH = (a, b) => (b.height || 0) - (a.height || 0);
+    h = hls.filter(isMuxed).filter(avc).filter((x) => (x.height || 0) <= 480).sort(byH)[0];
+    if (!h) {
+      // video H.264 senza audio + traccia audio a parte
+      const vo = hls.filter((x) => avc(x) && (!x.acodec || x.acodec === 'none') && (x.height || 0) <= 480).sort(byH)[0];
+      const ao = hls.filter(isAudio).sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0))[0];
+      if (vo && ao) { h = vo; hAudio = ao.url; }
+    }
+    if (!h) h = hls.filter(isMuxed).filter((x) => (x.height || 0) <= 480).sort(byH)[0];
+  }
   else h = hls.filter(isAudio).sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0))[0] || hls.filter(isMuxed).filter((x) => (x.height || 0) <= 360).sort((a, b) => (b.height || 0) - (a.height || 0))[0];
   if (!h) throw new Error('yt-dlp: nessun formato utilizzabile');
   const ua = (h.http_headers && h.http_headers['User-Agent']) || 'Mozilla/5.0';
-  return { hls: true, url: h.url, ua, mime: kind === 'video' ? 'video/mp4' : 'audio/aac', via: 'yt-dlp:hls', ...meta };
+  return { hls: true, url: h.url, audioUrl: hAudio, ua, mime: kind === 'video' ? 'video/mp4' : 'audio/aac', via: 'yt-dlp:hls', ...meta };
 }
 
 function markBad(key) {
