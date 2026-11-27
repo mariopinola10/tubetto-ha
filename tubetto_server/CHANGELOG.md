@@ -1,3 +1,10 @@
+# 1.5.0
+- 📺 TV: arriva sempre un'immagine. I video di YouTube sono preparati come HLS H.264+AAC (il formato che Google Cast
+  legge meglio); la musica arriva come video "badge" con copertina, titolo e artista. Se il video non è disponibile
+  o non si prepara, parte il badge. (Impostazioni: "Musica sulla TV: mostra il video di YouTube".)
+- Video nel browser: l'audio viene sempre convertito in AAC; nel Registro le righe [video] dicono da dove arriva.
+- Nuovo pacchetto font per scrivere il titolo sul badge.
+
 # 1.4.9
 - "Invalid media type audio/mp4 … Only app and channel are supported": per il video si usa solo la TV di Google Cast
   (o DLNA), mai l'integrazione Sony Bravia/Android TV, che accetta solo app e canali. Se un'entità rifiuta il link,

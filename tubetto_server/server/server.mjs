@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.9';
+const VERSION = '1.5.0';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -142,7 +142,7 @@ function proxyHls(req, res, src, kind, startAt) {
     if (startAt > 0) args.push('-ss', String(startAt));
     args.push('-user_agent', src.ua, '-reconnect', '1', '-reconnect_streamed', '1', '-i', src.audioUrl, '-map', '0:v:0', '-map', '1:a:0');
   }
-  if (kind === 'video') args.push('-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1');
+  if (kind === 'video') args.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1');
   else args.push('-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1');
   const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   let err = '';
@@ -195,7 +195,7 @@ function proxyMerged(req, res, videoId, startAt) {
   const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${videoId}?k=${k}`;
   const ss = startAt > 0 ? ['-ss', String(startAt)] : [];
   const args = ['-nostdin', '-loglevel', 'error', ...ss, '-i', local('vraw'), ...ss, '-i', local('stream'),
-    '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
+    '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
   const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   let err = '';
   ff.stderr.on('data', (d) => { err = (err + d).slice(-600); });
@@ -220,11 +220,12 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
   } catch (e) {
     if (kind === 'video') {
       // niente stream unico: unisco video H.264 e audio
-      try { await resolve(videoId, 'vonly', false); return proxyMerged(req, res, videoId, startAt); } catch (e2) { /* niente */ }
+      try { const v = await resolve(videoId, 'vonly', false); log('[video]', videoId, 'video+audio separati via', v.via, 'itag', v.itag); return proxyMerged(req, res, videoId, startAt); } catch (e2) { /* niente */ }
       return sendJson(res, 404, { error: 'Video non disponibile: ' + e.message });
     }
     return sendJson(res, 502, { error: e.message });
   }
+  if (kind === 'video') log('[video]', videoId, src.hls ? 'HLS' : 'diretto', 'via', src.via, src.itag ? 'itag ' + src.itag : '', src.audioUrl ? '(audio separato)' : '');
   if (src.hls) return proxyHls(req, res, src, kind, startAt);
   const total = src.clen;
   let start = 0, end = total - 1, status = 200;
@@ -332,6 +333,90 @@ async function videoUrl(it, audio = false) {
   return audio ? `${base}/stream/${it.id}/${urlName(it)}.m4a?k=${sign(it.id)}` : `${base}/video/${it.id}/${urlName(it)}.mp4?k=${sign(it.id)}`;
 }
 
+// ------------------------------------------------------------------ HLS per le TV
+// La TV (Google Cast) legge bene l'HLS H.264+AAC: per i video si rimpacchetta lo stream di YouTube;
+// per la musica si crea un video "badge" con copertina e titolo, così sulla TV c'è sempre un'immagine.
+
+const HLS_DIR = '/tmp/tubetto-hls';
+const tvSessions = new Map(); // sid → { ff, dir, entity, at }
+
+function killTvSession(sid) {
+  const t = tvSessions.get(sid);
+  if (!t) return;
+  try { t.ff.kill('SIGKILL'); } catch (e) { /* già chiuso */ }
+  setTimeout(() => fs.rm(t.dir, { recursive: true, force: true }, () => null), 60000);
+  tvSessions.delete(sid);
+}
+
+function killTvSessions(entities) {
+  for (const [sid, t] of tvSessions) if (!entities || entities.some((e) => String(t.entity).split(',').includes(e))) killTvSession(sid);
+}
+
+setInterval(() => { for (const [sid, t] of tvSessions) if (Date.now() - t.at > 4 * 3600000) killTvSession(sid); }, 600000);
+try { fs.rmSync(HLS_DIR, { recursive: true, force: true }); } catch (e) { /* niente */ }
+
+const FONT = ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find((f) => fs.existsSync(f));
+
+/** Avvia l'HLS per una TV e aspetta il primo pezzo. mode: 'video' | 'badge'. */
+async function startTvHls(it, mode, entity) {
+  const sid = crypto.randomBytes(8).toString('hex');
+  const dir = path.join(HLS_DIR, sid);
+  fs.mkdirSync(dir, { recursive: true });
+  const k = sign(it.id);
+  const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${it.id}?k=${k}`;
+  const args = ['-nostdin', '-loglevel', 'error'];
+  if (mode === 'video') {
+    args.push('-i', local('video'), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2');
+  } else {
+    fs.writeFileSync(path.join(dir, 't1.txt'), String(it.title || '').slice(0, 60));
+    fs.writeFileSync(path.join(dir, 't2.txt'), String(it.author || '').slice(0, 60));
+    const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
+    const txt = FONT
+      ? `,drawtext=fontfile=${FONT}:textfile=${dir}/t1.txt:expansion=none:fontcolor=white:fontsize=40:x=(w-tw)/2:y=560,drawtext=fontfile=${FONT}:textfile=${dir}/t2.txt:expansion=none:fontcolor=0xdddddd:fontsize=30:x=(w-tw)/2:y=620`
+      : '';
+    const fc = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=20:2,eq=brightness=-0.3[bg];`
+      + `[0:v]crop=iw:iw*9/16,scale=-2:440[fg];[bg][fg]overlay=(W-w)/2:70${txt},format=yuv420p[v]`;
+    args.push('-loop', '1', '-framerate', '5', '-i', thumb, '-i', local('stream'), '-filter_complex', fc,
+      '-map', '[v]', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-r', '5', '-g', '20',
+      '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-shortest');
+  }
+  args.push('-f', 'hls', '-hls_time', '4', '-hls_list_size', '0', '-hls_playlist_type', 'event',
+    '-hls_segment_filename', path.join(dir, 's%05d.ts'), path.join(dir, 'index.m3u8'));
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  ff.stderr.on('data', (d) => { err = (err + d).slice(-800); });
+  ff.on('close', (code) => { if (code) log('[tv]', mode, it.id, 'ffmpeg codice', code, err.trim().split('\n').pop()); });
+  tvSessions.set(sid, { ff, dir, entity, at: Date.now() });
+  // aspetto che ci sia la playlist con almeno un pezzo
+  const idx = path.join(dir, 'index.m3u8');
+  for (let i = 0; i < 60; i++) {
+    await new Promise((ok) => setTimeout(ok, 500));
+    if (ff.exitCode !== null && ff.exitCode !== 0) throw new Error('preparazione per la TV non riuscita: ' + (err.trim().split('\n').pop() || 'ffmpeg'));
+    try { if (/\.ts/.test(fs.readFileSync(idx, 'utf8'))) break; } catch (e) { /* non ancora */ }
+  }
+  log('[tv]', mode === 'video' ? 'video' : 'badge', it.id, '→', entity);
+  return `${await lanBaseUrl()}/hls/${sid}/index.m3u8`;
+}
+
+async function lanBaseUrl() {
+  return (options.stream_base_url || '').trim().replace(/\/+$/, '') || await house.lanBase(PORT);
+}
+
+function serveHls(req, res, sid, file) {
+  const t = tvSessions.get(sid);
+  if (!t || !/^(index\.m3u8|s\d{5}\.ts)$/.test(file)) return sendJson(res, 404, { error: 'Sessione finita' });
+  const f = path.join(t.dir, file);
+  fs.stat(f, (err, st) => {
+    if (err) return sendJson(res, 404, { error: 'Non ancora pronto' });
+    res.writeHead(200, {
+      'Content-Type': file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t',
+      'Content-Length': st.size, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*',
+    });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(f).pipe(res);
+  });
+}
+
 // video in corso sulle TV: coda per avanti/indietro e passaggio automatico al successivo
 let houseVideo = null;
 
@@ -341,18 +426,27 @@ async function playHouseVideo(idx) {
   const it = hv.items[idx];
   // TV: video per i video; per la musica la copertina (o il video se scelto nelle impostazioni).
   // Se il video non è disponibile, arriva comunque l'audio con la copertina.
-  let audio = hv.music && hv.tvCover;
+  let audio = hv.music && !hv.tvVideo;
   if (!audio) {
     if (!(await videoPlayable(it.id))) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
   }
-  const u = await videoUrl(it, audio);
   const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
   // fermo il trasferimento precedente sulle TV (video, brano o Music Assistant sulla stessa TV)
   await house.stopDirect(hv.tv.flatMap((p) => [hv.vmap[p], p !== hv.vmap[p] ? p : null]));
+  killTvSessions(hv.tv.map((p) => hv.vmap[p]));
+  const ents = hv.tv.map((p) => hv.vmap[p]).join(',');
+  let u;
+  try { u = await startTvHls(it, audio ? 'badge' : 'video', ents); } catch (e) {
+    if (audio) throw e;
+    log('[tv] video non riuscito per', it.id, '(' + e.message + '): mando copertina e audio');
+    audio = true;
+    killTvSessions(hv.tv.map((p) => hv.vmap[p]));
+    u = await startTvHls(it, 'badge', ents);
+  }
   const fallback = [];
   for (const p of hv.tv) {
     try {
-      await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, audio ? 'audio/mp4' : 'video/mp4');
+      await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, 'application/x-mpegURL');
       house.routeVideo(p, hv.vmap[p]);
     } catch (e) {
       // l'entità non accetta link (es. integrazione Sony Bravia): la escludo e la stanza riceve via Music Assistant
@@ -405,10 +499,10 @@ async function houseRadio(players, radioIt, video) {
   return rest.length ? await house.play(rest, [radioIt.url]) : { grouped: false };
 }
 
-async function houseItems(players, items, music, tvCover, video) {
+async function houseItems(players, items, music, tvVideo, video) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
   if (tv.length) {
-    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvCover };
+    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo };
     await playHouseVideo(0);
     return { video: true };
   }
@@ -450,6 +544,10 @@ const server = http.createServer(async (req, res) => {
       if (qi >= 0 && houseIds[qi + 1]) prefetch(houseIds[qi + 1]);
       return await proxy(req, res, id, kind === 'video' ? 'video' : kind === 'vraw' ? 'vonly' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
+
+    // HLS preparato per le TV (link con codice casuale, valido finché dura la riproduzione)
+    const hm = /^\/hls\/([0-9a-f]{16})\/([^/]+)$/.exec(p);
+    if (hm) return serveHls(req, res, hm[1], hm[2]);
 
     // Radio web (dal pannello o con chiave)
     if (p === '/radiostream') {
@@ -533,7 +631,7 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
-        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvCover, b.video || {}));
+        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvVideo, b.video || {}));
         return sendJson(res, 200, { ok: true, count: items.length, items, ...r });
       }
       if (op === 'house/cmd' && req.method === 'POST') {
@@ -544,7 +642,7 @@ const server = http.createServer(async (req, res) => {
           await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));
           return sendJson(res, 200, { ok: true });
         }
-        if (b.cmd === 'stop') { houseVideo = null; }
+        if (b.cmd === 'stop') { houseVideo = null; killTvSessions(null); }
         let r = null;
         try {
           r = await house.command(pls, b.cmd, b.value);

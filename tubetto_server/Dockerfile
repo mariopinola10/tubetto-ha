@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # ffmpeg per gli stream HLS; yt-dlp con plugin PO token (bgutil) e runtime JavaScript (node, già presente)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg ca-certificates \
+ && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg ca-certificates fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/ytdlp \
  && /opt/ytdlp/bin/pip install --no-cache-dir -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
