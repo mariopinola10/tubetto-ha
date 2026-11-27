@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.4.3';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1191,6 +1191,34 @@ function openItem(listId, idx, forcePlay = false) {
   }
 }
 
+/** Righe di copertine: tieni premuto il mouse e trascina a destra/sinistra per sfogliare. */
+function dragScroll(root) {
+  let row = null, startX = 0, startLeft = 0, moved = false;
+  root.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    row = e.target.closest('.row');
+    if (!row) return;
+    startX = e.clientX; startLeft = row.scrollLeft; moved = false;
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!row) return;
+    const dx = e.clientX - startX;
+    if (!moved && Math.abs(dx) < 6) return;
+    if (!moved) { moved = true; row.classList.add('dragging'); }
+    row.scrollLeft = startLeft - dx;
+    e.preventDefault();
+  });
+  window.addEventListener('mouseup', () => {
+    if (!row) return;
+    row.classList.remove('dragging');
+    row = null;
+    if (moved) { dragScroll.until = Date.now() + 250; }
+  });
+  // dopo un trascinamento il rilascio non deve aprire la copertina
+  root.addEventListener('click', (e) => { if (Date.now() < (dragScroll.until || 0)) { e.stopPropagation(); e.preventDefault(); } }, true);
+  root.addEventListener('dragstart', (e) => { if (e.target.closest && e.target.closest('.row')) e.preventDefault(); });
+}
+
 function onListClick(e) {
   const el = e.target.closest('[data-list]');
   if (!el) return;
@@ -1473,7 +1501,21 @@ function initMedia() {
     refreshPlayButton();
   });
   m.addEventListener('pause', () => { pl.playing = false; refreshPlayButton(); });
-  m.addEventListener('ended', () => { pl.playing = false; next(true); });
+  m.addEventListener('ended', () => {
+    pl.playing = false;
+    // stream interrotto a metà (non è davvero finito): riprendo da lì invece di saltare al successivo
+    const v = currentItem();
+    const tot = itemSeconds(v);
+    const t = localTimes().c;
+    if (v && v.kind !== 'RADIO' && v.kind !== 'FILM' && tot > 30 && t < tot - 8 && (pl.resumes || 0) < 3) {
+      pl.resumes = (pl.resumes || 0) + 1;
+      pl.offset = t;
+      m.src = srcFor(v, m.src.includes('/video/') ? 'video' : 'audio', t);
+      m.play().catch(() => null);
+      return;
+    }
+    next(true);
+  });
   m.addEventListener('error', onMediaError);
 }
 
@@ -1524,6 +1566,8 @@ function playCurrent() {
   if (isHouse()) return houseSend();
   pl.recorded = false;
   pl.retried = false;
+  pl.stallRetried = false;
+  pl.resumes = 0;
   pl.offset = 0;
   pl.lastProgress = Date.now();
   const m = media();
@@ -1566,8 +1610,17 @@ setInterval(() => {
   const v = currentItem();
   if (!v || isHouse() || m.paused || v.kind === 'RADIO') { pl.lastProgress = Date.now(); return; }
   if (pl.lastTime !== m.currentTime) { pl.lastTime = m.currentTime; pl.lastProgress = Date.now(); return; }
-  if (Date.now() - (pl.lastProgress || 0) > 25000) {
+  if (Date.now() - (pl.lastProgress || 0) > (m.src.includes('/video/') ? 40000 : 25000)) {
     pl.lastProgress = Date.now();
+    // prima riprovo dallo stesso punto, solo al secondo blocco passo avanti
+    if (!pl.stallRetried) {
+      pl.stallRetried = true;
+      const t = localTimes().c;
+      pl.offset = t;
+      m.src = srcFor(v, m.src.includes('/video/') ? 'video' : 'audio', t);
+      m.play().catch(() => null);
+      return;
+    }
     toast('Il brano si è bloccato: passo al successivo');
     next();
   }
@@ -1882,7 +1935,7 @@ async function houseSend() {
   try {
     const video = {};
     for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video });
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: LS.get('tvVideo', true) !== false });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));
@@ -1963,6 +2016,10 @@ async function showOutputMenu(x, y) {
   if (housePlayers.length) {
     entries.push('-');
     entries.push({ label: '🏠 Suona nelle stanze scelte', run: () => switchTarget('house') });
+    if (housePlayers.some((p) => p.video)) {
+      const tvv = LS.get('tvVideo', true) !== false;
+      entries.push({ label: (tvv ? '☑ ' : '☐ ') + '📺 Sulle TV mostra il video (anche per la musica)', run: () => { LS.set('tvVideo', !tvv); toast(!tvv ? '📺 Sulle TV arriva il video' : '📺 Sulle TV arriva solo l\'audio'); if (isHouse() && currentItem()) houseSend(); } });
+    }
     if (isHouse()) entries.push({ label: '⏹ Ferma la musica in casa', run: () => houseCmd('stop') });
   } else {
     entries.push({ label: 'Nessun player di Music Assistant trovato', run: () => null });
@@ -1999,6 +2056,7 @@ function bind() {
   $('#syncBtn').addEventListener('click', () => sync(true).then((changed) => changed && render()));
   $('#newPlaylistBtn').addEventListener('click', () => newPlaylist());
 
+  dragScroll($('#view'));
   for (const box of [$('#view'), $('#sideList')]) {
     box.addEventListener('click', onListClick);
     box.addEventListener('contextmenu', onListContext);

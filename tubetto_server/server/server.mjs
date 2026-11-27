@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.2';
+const VERSION = '1.4.3';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -281,7 +281,9 @@ async function runOp(op, params) {
 
 /** Nome leggibile nell'URL: Music Assistant lo mostra come titolo (niente "%20"). */
 function urlName(it) {
-  const name = `${it.author ? it.author + ' - ' : ''}${it.title || it.id}`.replace(/[\\/?#%"<>|:*&+=]+/g, ' ').trim().slice(0, 90) || it.id;
+  // niente emoji/simboli fuori dal piano base: tagliati a metà rompono il link ("URI malformed")
+  const raw = `${it.author ? it.author + ' - ' : ''}${it.title || it.id}`.replace(/[\u{10000}-\u{10FFFF}]/gu, ' ').replace(/[\uD800-\uDFFF]/g, ' ');
+  const name = Array.from(raw.replace(/[\\/?#%"<>|:*&+=]+/g, ' ').trim()).slice(0, 90).join('').trim() || it.id;
   return encodeURIComponent(name.replace(/\s+/g, '_')).replace(/%E2%80%93/g, '-');
 }
 
@@ -423,7 +425,7 @@ const server = http.createServer(async (req, res) => {
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
         // Video verso una TV: si manda il video (Cast) alle stanze che lo supportano, l'audio alle altre
-        if (b.music === false) {
+        if (b.music === false || b.tvVideo) {
           const vmap = b.video || {};
           const tv = players.filter((p) => vmap[p]);
           if (tv.length) {

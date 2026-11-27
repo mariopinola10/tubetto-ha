@@ -1,3 +1,10 @@
+# 1.4.3
+- Righe di copertine sfogliabili col mouse: tieni premuto e trascina a destra/sinistra.
+- Risolto "Casa: URI malformed" con i titoli che contengono emoji.
+- 📺 Con una TV scelta arriva il VIDEO anche per i brani musicali (prima andavano solo come audio).
+  Si può tornare al solo audio dal menu delle uscite: "📺 Sulle TV mostra il video".
+- Dal PC meno salti: se lo stream si interrompe o si blocca, riprende dallo stesso punto prima di passare al successivo.
+
 # 1.4.2
 - 📺 Video sulla TV: la TV riceveva un link con il nome interno dell'add-on (raggiungibile solo da Music Assistant)
   e diceva "impossibile riprodurre". Ora il link usa l'IP di casa di Home Assistant e la porta 8099, aperta di default.
