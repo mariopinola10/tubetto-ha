@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.3';
+const APP_VERSION = '1.4.5';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1458,10 +1458,29 @@ const pl = {
   target: LS.get('target', 'local'),          // 'local' = questo dispositivo, 'house' = Music Assistant
   players: LS.get('housePlayers', []),        // entity_id delle stanze scelte
   house: null,                                // ultimo stato letto da Home Assistant
+  alsoLocal: LS.get('alsoLocal', false),      // in casa E anche su questo dispositivo
 };
 
 const media = () => $('#media');
 const isHouse = () => pl.target === 'house' && pl.players.length > 0;
+const bothLocal = () => isHouse() && pl.alsoLocal;
+
+/** Riproduzione su questo dispositivo (anche insieme alle stanze). */
+function playLocal(t = 0) {
+  const v = currentItem();
+  if (!v) return;
+  pl.recorded = isHouse();
+  pl.retried = false;
+  pl.stallRetried = false;
+  pl.resumes = 0;
+  pl.offset = 0;
+  pl.lastProgress = Date.now();
+  const m = media();
+  $('#videoPanel').classList.toggle('off', !!pl.music);
+  m.src = v.kind === 'RADIO' ? radioSrc(v) : v.kind === 'FILM' ? v.url : srcFor(v, pl.music ? 'audio' : 'video', t);
+  if (t > 0 && v.kind !== 'RADIO' && v.kind !== 'FILM') pl.offset = t;
+  m.play().catch(() => { /* serve un tocco dell'utente */ });
+}
 
 function currentItem() {
   return pl.idx >= 0 ? pl.queue[pl.idx] : null;
@@ -1503,6 +1522,7 @@ function initMedia() {
   m.addEventListener('pause', () => { pl.playing = false; refreshPlayButton(); });
   m.addEventListener('ended', () => {
     pl.playing = false;
+    if (isHouse()) return; // insieme alle stanze: il brano dopo lo decide la casa
     // stream interrotto a metà (non è davvero finito): riprendo da lì invece di saltare al successivo
     const v = currentItem();
     const tot = itemSeconds(v);
@@ -1579,7 +1599,7 @@ function playCurrent() {
 
 function onMediaError() {
   const v = currentItem();
-  if (!v || isHouse()) return;
+  if (!v || (isHouse() && !pl.alsoLocal)) return;
   const m = media();
   if (v.kind === 'FILM') return toast('Il film non si apre: riprova o scegline un altro', 5000);
   if (!pl.music && m.src.includes('/video/')) {
@@ -1598,6 +1618,7 @@ function onMediaError() {
     m.play().catch(() => null);
     return;
   }
+  if (isHouse()) return toast('Su questo dispositivo non si apre: continua nelle stanze');
   // mai senza musica: si passa al successivo (dopo tanti errori di fila, con una pausa più lunga)
   pl.skips++;
   toast('Brano non riproducibile, passo al successivo');
@@ -1715,7 +1736,11 @@ function enqueue(v) {
 
 function togglePlay() {
   if (!currentItem()) return;
-  if (isHouse()) return houseCmd(pl.house && pl.house.state === 'playing' ? 'pause' : 'play');
+  if (isHouse()) {
+    const playing = pl.house && pl.house.state === 'playing';
+    if (bothLocal()) { if (playing) media().pause(); else media().play().catch(() => null); }
+    return houseCmd(playing ? 'pause' : 'play');
+  }
   const m = media();
   if (m.paused) m.play().catch(() => null);
   else m.pause();
@@ -1874,13 +1899,14 @@ function renderQueue() {
 
 function setVideoPanelFor(music) {
   const p = $('#videoPanel');
-  p.classList.toggle('off', music || isHouse());
+  p.classList.toggle('off', music || (isHouse() && !pl.alsoLocal));
 }
 
 function seekTo(fraction) {
   if (isHouse()) {
     const d = (pl.house && pl.house.duration) || 0;
     if (d) houseCmd('seek', Math.round(fraction * d));
+    if (bothLocal()) { const m = media(); if (isFinite(m.duration) && m.duration > 0) m.currentTime = fraction * m.duration; }
     return;
   }
   const m = media();
@@ -1929,8 +1955,7 @@ setInterval(() => {
 async function houseSend() {
   const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url, thumb: v.thumb }));
   if (!items.length) return;
-  media().pause();
-  setVideoPanelFor(true);
+  if (bothLocal()) playLocal(); else { media().pause(); setVideoPanelFor(true); }
   updateNowPlaying();
   try {
     const video = {};
@@ -1968,6 +1993,7 @@ async function pollHouse() {
       if (i >= 0 && i !== pl.idx) {
         pl.idx = i;
         pl.recorded = false;
+        if (bothLocal()) playLocal();
         updateNowPlaying();
         recordListen(pl.queue[i], pl.music);
       }
@@ -1988,8 +2014,8 @@ function playerNames() {
 function refreshOutputButton() {
   const b = $('#pbOutput');
   b.classList.toggle('on', isHouse());
-  b.textContent = isHouse() ? '🏠' : '🎧';
-  b.title = isHouse() ? 'In casa: ' + playerNames() : 'Su questo dispositivo';
+  b.textContent = isHouse() ? (pl.alsoLocal ? '🏠🎧' : '🏠') : '🎧';
+  b.title = isHouse() ? 'In casa: ' + playerNames() + (pl.alsoLocal ? ' + questo dispositivo' : '') : 'Su questo dispositivo';
 }
 
 async function showOutputMenu(x, y) {
@@ -2001,7 +2027,21 @@ async function showOutputMenu(x, y) {
   }
   const sel = new Set(pl.players);
   const entries = [
-    { label: (pl.target === 'local' ? '✓ ' : '　') + '🎧 Questo dispositivo', run: () => switchTarget('local') },
+    {
+      label: ((!isHouse() || pl.alsoLocal) ? '☑ ' : '☐ ') + '🎧 Questo dispositivo',
+      run: () => {
+        if (!isHouse()) { pl.alsoLocal = true; LS.set('alsoLocal', true); return switchTarget('local'); }
+        pl.alsoLocal = !pl.alsoLocal;
+        LS.set('alsoLocal', pl.alsoLocal);
+        refreshOutputButton();
+        if (pl.alsoLocal) {
+          const t = pl.house && pl.house.position ? pl.house.position + (pl.house.state === 'playing' && pl.house.positionAt ? (Date.now() - Date.parse(pl.house.positionAt)) / 1000 : 0) : 0;
+          if (currentItem()) playLocal(Math.max(0, Math.floor(t)));
+          toast('🎧 Anche su questo dispositivo');
+        } else { media().pause(); setVideoPanelFor(true); toast('Solo nelle stanze'); }
+        setTimeout(() => showOutputMenu(x, y), 0);
+      },
+    },
     '-',
     ...housePlayers.map((p) => ({
       label: (sel.has(p.id) ? '☑ ' : '☐ ') + p.name + (p.video ? ' 📺' : '') + (p.state === 'playing' ? ' ♪' : ''),
@@ -2015,7 +2055,8 @@ async function showOutputMenu(x, y) {
   ];
   if (housePlayers.length) {
     entries.push('-');
-    entries.push({ label: '🏠 Suona nelle stanze scelte', run: () => switchTarget('house') });
+    entries.push({ label: '🏠 Suona nelle stanze scelte' + (pl.alsoLocal ? ' + questo dispositivo' : ''), run: () => switchTarget('house') });
+    if (isHouse()) entries.push({ label: '🎧 Solo su questo dispositivo', run: () => switchTarget('local') });
     if (housePlayers.some((p) => p.video)) {
       const tvv = LS.get('tvVideo', true) !== false;
       entries.push({ label: (tvv ? '☑ ' : '☐ ') + '📺 Sulle TV mostra il video (anche per la musica)', run: () => { LS.set('tvVideo', !tvv); toast(!tvv ? '📺 Sulle TV arriva il video' : '📺 Sulle TV arriva solo l\'audio'); if (isHouse() && currentItem()) houseSend(); } });

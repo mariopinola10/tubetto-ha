@@ -108,12 +108,28 @@ export async function players() {
   };
 }
 
-/** Video sulla TV (Chromecast/Cast di Home Assistant): Music Assistant porta solo l'audio. */
-export async function playVideo(entity, url, title, thumb) {
+/** Entità che sono player di Music Assistant (le altre, es. una TV Cast, si comandano direttamente). */
+export async function maSet() {
+  try {
+    const t = await ha('POST', '/template', { template: "{{ integration_entities('music_assistant') | select('match', 'media_player\\\\.') | list | tojson }}" });
+    return new Set(typeof t === 'string' ? JSON.parse(t) : t);
+  } catch (e) { return new Set(); }
+}
+
+/** Interrompe quello che la TV sta ricevendo (altrimenti il nuovo invio la trova occupata). */
+export async function stopDirect(entities) {
+  const list = [...new Set(entities.filter(Boolean))];
+  if (!list.length) return;
+  await Promise.all(list.map((e) => service('media_player', 'media_stop', { entity_id: e }).catch(() => null)));
+  await new Promise((ok) => setTimeout(ok, 800));
+}
+
+/** Video (o audio) direttamente sulla TV (Chromecast/Cast di Home Assistant): Music Assistant porta solo l'audio. */
+export async function playVideo(entity, url, title, thumb, type = 'video/mp4') {
   await service('media_player', 'play_media', {
     entity_id: entity,
     media_content_id: url,
-    media_content_type: 'video/mp4',
+    media_content_type: type,
     extra: { metadata: { metadataType: 0, title, images: thumb ? [{ url: thumb }] : [] } },
   });
 }
@@ -124,6 +140,8 @@ export async function playVideo(entity, url, title, thumb) {
  */
 export async function play(players, urls) {
   if (!players.length || !urls.length) throw new Error('Niente da suonare');
+  // la stessa TV stava mostrando un video via Cast: lo fermo prima di passare a Music Assistant
+  await stopDirect(players.map((p) => videoRoute.get(p)).filter((e) => e && !players.includes(e)));
   clearVideo(players);
   const leader = players[0];
   if (players.length > 1) {

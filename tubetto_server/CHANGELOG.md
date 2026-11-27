@@ -1,3 +1,14 @@
+# 1.4.5
+- Passando da un video all'altro (o da video a canzone) sulla TV, il trasferimento precedente viene fermato prima
+  di mandare il nuovo: la TV non risulta più occupata.
+- 🎧 + 🏠 insieme: nel menu delle uscite "Questo dispositivo" è una casella che si può spuntare insieme alle stanze.
+  La musica suona nelle stanze e anche qui; il pulsante mostra 🏠🎧.
+
+# 1.4.4
+- Risolto "does not support action music_assistant.play_media": se la stanza scelta è la TV vista direttamente
+  da Home Assistant (Cast) e non un player di Music Assistant, video, brani, playlist e radio le arrivano via Cast,
+  con avanti/indietro e passaggio automatico al brano dopo gestiti da Tubetto Server.
+
 # 1.4.3
 - Righe di copertine sfogliabili col mouse: tieni premuto e trascina a destra/sinistra.
 - Risolto "Casa: URI malformed" con i titoli che contengono emoji.
