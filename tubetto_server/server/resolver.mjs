@@ -197,6 +197,15 @@ function pickAudio(formats, preferItag) {
   return best(mp4.length ? mp4 : list);
 }
 
+/** Solo video H.264 (senza audio) fino a 480p: si unisce all'audio con ffmpeg quando YouTube non dà lo stream unico. */
+function pickVideoOnly(formats, preferItag) {
+  const v = formats.filter((f) => f.url && /^video\/mp4/.test(f.mimeType || '') && /avc1/.test(f.mimeType || ''));
+  if (!v.length) return null;
+  if (preferItag) { const same = v.find((f) => f.itag === preferItag); if (same) return same; }
+  const fit = v.filter((f) => (f.height || 0) <= 480).sort((a, b) => (b.height || 0) - (a.height || 0));
+  return fit[0] || v.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
+}
+
 function pickMuxed(formats, preferItag) {
   const muxed = formats.filter((f) => f.url && /^video\//.test(f.mimeType || '') && /mp4a|opus|vorbis/.test(f.mimeType));
   if (!muxed.length) return null;
@@ -239,7 +248,7 @@ async function fromInnertube(videoId, kind, preferItag) {
 
       // 1) link diretti (si possono saltare avanti e indietro), se questo client non li dà "a metà"
       if (!(bad.get(key) > now)) {
-        const f = kind === 'video' ? pickMuxed(sd.formats || [], preferItag) : pickAudio(sd.adaptiveFormats || [], preferItag);
+        const f = kind === 'video' ? pickMuxed(sd.formats || [], preferItag) : kind === 'vonly' ? pickVideoOnly(sd.adaptiveFormats || [], preferItag) : pickAudio(sd.adaptiveFormats || [], preferItag);
         if (f) {
           const clen = Number(f.contentLength) || (await contentLength(f.url, client.userAgent));
           const points = [0, Math.floor(clen / 2), Math.max(0, clen - 4096)].filter((v, i, a) => a.indexOf(v) === i);
@@ -279,7 +288,7 @@ async function fromInnertube(videoId, kind, preferItag) {
       }
 
       // 3) HLS (es. client IOS): convertito al volo da ffmpeg
-      if (sd.hlsManifestUrl) {
+      if (sd.hlsManifestUrl && kind !== 'vonly') {
         let media = await pickHls(sd.hlsManifestUrl, client.userAgent, kind);
         let audioUrl = null;
         if (media && typeof media === 'object') { audioUrl = media.audio; media = media.uri; }
@@ -325,7 +334,11 @@ async function fromYtdlp(videoId, kind) {
   const isMuxed = (x) => x.vcodec && x.vcodec !== 'none' && x.acodec && x.acodec !== 'none';
   let f;
   if (kind === 'video') f = direct.filter(isMuxed).sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-  else {
+  else if (kind === 'vonly') {
+    const vo = direct.filter((x) => /^avc1/i.test(x.vcodec || '') && (!x.acodec || x.acodec === 'none'));
+    f = vo.filter((x) => (x.height || 0) <= 480).sort((a, b) => (b.height || 0) - (a.height || 0))[0] || vo.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
+    if (!f) throw new Error('yt-dlp: nessun video H.264');
+  } else {
     const audio = direct.filter(isAudio);
     const m4a = audio.filter((x) => x.ext === 'm4a');
     f = (m4a.length ? m4a : audio).sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
@@ -334,7 +347,7 @@ async function fromYtdlp(videoId, kind) {
     const ua = (f.http_headers && f.http_headers['User-Agent']) || 'Mozilla/5.0';
     try {
       const clen = f.filesize || (await contentLength(f.url, ua));
-      const mime = kind === 'video' ? 'video/mp4' : f.ext === 'm4a' ? 'audio/mp4' : f.ext === 'webm' ? 'audio/webm' : 'audio/mpeg';
+      const mime = kind === 'video' || kind === 'vonly' ? 'video/mp4' : f.ext === 'm4a' ? 'audio/mp4' : f.ext === 'webm' ? 'audio/webm' : 'audio/mpeg';
       return { url: f.url, ua, clen, itag: Number(f.format_id) || 0, mime, via: 'yt-dlp', ...meta };
     } catch (e) { /* provo HLS */ }
   }
@@ -402,7 +415,7 @@ export async function resolve(videoId, kind = 'audio', force = false, preferItag
     try {
       src = await fromYtdlp(videoId, kind);
     } catch (e2) {
-      if (kind === 'video') throw new Error(e1.message + ' || ' + e2.message); // video non sempre disponibile: non è un guasto
+      if (kind !== 'audio') throw new Error(e1.message + ' || ' + e2.message); // video non sempre disponibile: non è un guasto
       stats.fail++;
       stats.consecutiveFail++;
       stats.lastError = `${new Date().toISOString()} ${videoId}: ${e1.message} || ${e2.message}`;

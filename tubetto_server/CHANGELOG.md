@@ -1,3 +1,8 @@
+# 1.4.8
+- "Video non disponibile, riproduco solo l'audio": quando YouTube non dà più lo stream unico audio+video,
+  Tubetto Server prende video (H.264, fino a 480p) e audio separati e li unisce con ffmpeg. Vale per il browser e la TV.
+- Stanze doppie con nomi simili ("TV dello studio" e "TV STUDIO"): ora sono un'unica voce.
+
 # 1.4.7
 - Video neri (solo audio) nel browser e sulla TV: si sceglie solo video H.264, quello che leggono tutti; se YouTube
   dà video e audio separati, ffmpeg li unisce.

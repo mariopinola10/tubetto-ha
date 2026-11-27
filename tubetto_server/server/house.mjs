@@ -76,7 +76,9 @@ export async function players() {
   const all = states.filter((s) => s.entity_id.startsWith('media_player.'));
   const list = ids.length ? all.filter((s) => ids.includes(s.entity_id)) : all;
   const nameOf = (s) => (s.attributes && s.attributes.friendly_name) || s.entity_id;
-  const norm = (n) => String(n).toLowerCase().replace(/[♪()]/g, '').replace(/\s+/g, ' ').trim();
+  // "TV dello studio" e "TV STUDIO" sono la stessa stanza: tolgo articoli e preposizioni
+  const STOP = new Set(['di', 'del', 'dello', 'della', 'dei', 'degli', 'delle', 'da', 'il', 'lo', 'la', 'i', 'gli', 'le', 'the', 'of', 'in', 'airplay', 'cast', 'dlna']);
+  const norm = (n) => String(n).toLowerCase().replace(/[♪()\[\]_\-]/g, ' ').split(/\s+/).filter((w) => w && !STOP.has(w)).join(' ');
   // TV/Chromecast fuori da Music Assistant (stesso nome): servono per mostrare anche il VIDEO
   const videoCapable = all.filter((s) => !ids.includes(s.entity_id) && ((s.attributes && s.attributes.device_class) === 'tv' || /cast|bravia|tv|chromecast|sony|samsung|philips|\blg\b|kd-|aftss|fire/i.test(s.entity_id + ' ' + nameOf(s))));
   // un solo elemento per stanza: lo stesso dispositivo può comparire più volte (Cast, DLNA, AirPlay…)

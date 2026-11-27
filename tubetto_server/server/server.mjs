@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.7';
+const VERSION = '1.4.8';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -187,12 +187,42 @@ async function proxyRadio(req, res, url) {
   res.end();
 }
 
+/** Video da due flussi YouTube separati (video H.264 + audio), uniti da ffmpeg in un MP4 continuo. */
+function proxyMerged(req, res, videoId, startAt) {
+  res.writeHead(200, { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store', 'Accept-Ranges': 'none', 'Access-Control-Allow-Origin': '*' });
+  if (req.method === 'HEAD') return res.end();
+  const k = sign(videoId);
+  const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${videoId}?k=${k}`;
+  const ss = startAt > 0 ? ['-ss', String(startAt)] : [];
+  const args = ['-nostdin', '-loglevel', 'error', ...ss, '-i', local('vraw'), ...ss, '-i', local('stream'),
+    '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = '';
+  ff.stderr.on('data', (d) => { err = (err + d).slice(-600); });
+  ff.stdout.pipe(res);
+  res.on('close', () => ff.kill('SIGKILL'));
+  ff.on('close', (code) => {
+    if (code && !res.destroyed) log('[stream] unione video+audio terminata con codice', code, err.trim().split('\n').pop());
+    res.end();
+  });
+}
+
+/** Il video si può mostrare? (stream unico o video H.264 da unire all'audio) */
+export async function videoPlayable(videoId) {
+  try { await resolve(videoId, 'video', false); return true; } catch (e) { /* provo i flussi separati */ }
+  try { await resolve(videoId, 'vonly', false); return true; } catch (e) { return false; }
+}
+
 async function proxy(req, res, videoId, kind, startAt = 0) {
   let src;
   try {
     src = await resolve(videoId, kind, false);
   } catch (e) {
-    if (kind === 'video') return sendJson(res, 404, { error: 'Video non disponibile: ' + e.message });
+    if (kind === 'video') {
+      // niente stream unico: unisco video H.264 e audio
+      try { await resolve(videoId, 'vonly', false); return proxyMerged(req, res, videoId, startAt); } catch (e2) { /* niente */ }
+      return sendJson(res, 404, { error: 'Video non disponibile: ' + e.message });
+    }
     return sendJson(res, 502, { error: e.message });
   }
   if (src.hls) return proxyHls(req, res, src, kind, startAt);
@@ -313,7 +343,7 @@ async function playHouseVideo(idx) {
   // Se il video non è disponibile, arriva comunque l'audio con la copertina.
   let audio = hv.music && !hv.tvVideo;
   if (!audio) {
-    try { await resolve(it.id, 'video', false); } catch (e) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
+    if (!(await videoPlayable(it.id))) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
   }
   const u = await videoUrl(it, audio);
   const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
@@ -398,14 +428,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Stream: dal pannello, con chiave, o con firma (link inviati a Music Assistant)
-    const sm = /^\/(stream|video)\/([A-Za-z0-9_-]{11})(\/[^/]*)?$/.exec(p);
+    const sm = /^\/(stream|video|vraw)\/([A-Za-z0-9_-]{11})(\/[^/]*)?$/.exec(p);
     if (sm) {
       const [, kind, id] = sm;
       if (!authorized(req, url) && url.searchParams.get('k') !== sign(id)) return sendJson(res, 401, { error: 'Non autorizzato' });
       // coda mandata in casa: preparo già il brano dopo
       const qi = houseIds.indexOf(id);
       if (qi >= 0 && houseIds[qi + 1]) prefetch(houseIds[qi + 1]);
-      return await proxy(req, res, id, kind === 'video' ? 'video' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
+      return await proxy(req, res, id, kind === 'video' ? 'video' : kind === 'vraw' ? 'vonly' : 'audio', Math.max(0, Number(url.searchParams.get('t')) || 0));
     }
 
     // Radio web (dal pannello o con chiave)
