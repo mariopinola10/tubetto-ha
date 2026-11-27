@@ -1,3 +1,12 @@
+# 1.6.0
+- Nuovo modo di usare le uscite: si ascolta e si guarda nel browser di Home Assistant (la barra in basso comanda solo
+  questo dispositivo). Dal menu 🎧 ogni stanza/TV ha i suoi ▶ (manda il brano o video in corso) e ⏹ (ferma solo lei).
+  Ogni TV va avanti da sola con la sua coda, anche a browser chiuso.
+- 📱 Firestick con l'app Tubetto (integrazione Android Debug Bridge): compare nel menu come "… (app Tubetto)".
+  ▶ accende la TV Sony collegata, la porta sull'HDMI 1 e apre il video nell'app Tubetto della Firestick;
+  ⏹ la ferma. La TV si trova da sola (nome in comune con la Firestick, es. "Salone"); altrimenti si imposta in
+  Configurazione: firestick_entity, firestick_tv, firestick_hdmi (predefinito "HDMI 1").
+
 # 1.5.9
 - 📺 Ogni stanza usa per prima la sua TV Google Cast con lo stesso nome (es. "TV dello studio" → media_player.tv_dello_studio)
   invece del DLNA: i video si aprono nell'app YouTube della TV.

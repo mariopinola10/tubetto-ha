@@ -106,9 +106,10 @@ export async function players() {
       byName.set(k, v);
     }
   }
+  const fs = await firesticks().catch(() => []);
   return {
     musicAssistant: ids.length > 0,
-    players: [...byName.values()].map((s) => {
+    players: [...fs.map((f) => ({ id: 'app:' + f.entity, name: f.name + ' (app Tubetto)', state: f.state, video: 'app', app: true })), ...[...byName.values()].map((s) => {
       const k = norm(nameOf(s));
       const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => castIds.has(x.entity_id) && (sameTv(x, s) || norm(nameOf(x)) === k)) || videoCapable.find((x) => sameTv(x, s)) || videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
       return {
@@ -119,8 +120,85 @@ export async function players() {
         group: (s.attributes && s.attributes.group_members) || [],
         video: v ? v.entity_id : null,
       };
-    }).sort((a, b) => a.name.localeCompare(b.name)),
+    })].sort((a, b) => a.name.localeCompare(b.name)),
   };
+}
+
+// ------------------------------------------------------------------ Firestick con l'app Tubetto (via ADB)
+
+let fsOpts = {};
+export function setFirestickOptions(o) { fsOpts = o || {}; }
+const APP_PKG = 'it.gerry.tubetto';
+const GENERIC = new Set(['tv', 'firestick', 'fire', 'stick', 'amazon', 'aftss', 'android', 'media', 'player', 'di', 'del', 'della', 'dello']);
+
+async function tpl(t) {
+  const r = await ha('POST', '/template', { template: t });
+  return typeof r === 'string' ? JSON.parse(r) : r;
+}
+
+/** Firestick (integrazione Android Debug Bridge) e la TV a cui sono collegate (integrazione Sony Bravia). */
+let fsCache = null;
+export async function firesticks() {
+  if (fsCache && Date.now() - fsCache.t < 60000) return fsCache.v;
+  const v = await firesticksNow();
+  fsCache = { t: Date.now(), v };
+  return v;
+}
+
+async function firesticksNow() {
+  const adb = await tpl("{{ integration_entities('androidtv') | select('match', 'media_player\\\\.') | list | tojson }}").catch(() => []);
+  const tvs = await tpl("{{ integration_entities('braviatv') | select('match', 'media_player\\\\.') | list | tojson }}").catch(() => []);
+  const devName = async (e) => tpl(`{{ (device_attr(device_id('${e}'), 'name_by_user') or device_attr(device_id('${e}'), 'name') or state_attr('${e}', 'friendly_name') or '') | tojson }}`).catch(() => '');
+  const out = [];
+  for (const pair of adb) {
+    const e = Array.isArray(pair) ? pair[1] : pair;
+    if (!e) continue;
+    const st = await ha('GET', '/states/' + e).catch(() => null);
+    const nm = (await devName(e)) || (st && st.attributes && st.attributes.friendly_name) || e;
+    const model = await tpl(`{{ (device_attr(device_id('${e}'), 'model') or '') | tojson }}`).catch(() => '');
+    const forced = fsOpts.firestick_entity && fsOpts.firestick_entity === e;
+    if (!forced && !/fire|aftss|aft[a-z]|firestick/i.test(`${e} ${nm} ${model}`)) continue;
+    // TV: scelta nelle opzioni o quella Sony Bravia con una parola del nome in comune (es. "Salone")
+    let tv = fsOpts.firestick_tv || '';
+    if (!tv) {
+      const words = String(nm).toLowerCase().split(/[^a-zà-ù0-9]+/).filter((w) => w.length > 2 && !GENERIC.has(w));
+      for (const t of tvs) {
+        const tn = String(await devName(t)).toLowerCase();
+        if (words.some((w) => tn.includes(w) || t.includes(w))) { tv = t; break; }
+      }
+    }
+    out.push({ entity: e, name: nm, state: st ? st.state : 'unknown', tv });
+  }
+  return out;
+}
+
+const adbCmd = (entity, command) => service('androidtv', 'adb_command', { entity_id: entity, command });
+
+/** Accende la TV, la porta sull'HDMI della Firestick e apre il video nell'app Tubetto. */
+export async function firestickPlay(entity, it) {
+  const f = (await firesticks()).find((x) => x.entity === entity) || { entity, tv: fsOpts.firestick_tv || '' };
+  if (f.tv) {
+    const tvState = await ha('GET', '/states/' + f.tv).catch(() => null);
+    if (!tvState || tvState.state === 'off' || tvState.state === 'standby') {
+      await service('media_player', 'turn_on', { entity_id: f.tv }).catch(() => null);
+      await new Promise((ok) => setTimeout(ok, 6000));
+    }
+    const list = ((await ha('GET', '/states/' + f.tv).catch(() => ({}))).attributes || {}).source_list || [];
+    const want = fsOpts.firestick_hdmi || 'HDMI 1';
+    const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const src = list.find((x) => norm(x) === norm(want)) || list.find((x) => norm(x).startsWith(norm(want))) || want;
+    await service('media_player', 'select_source', { entity_id: f.tv, source: src }).catch((e) => console.log('[firestick] cambio ingresso non riuscito:', e.message));
+  }
+  await adbCmd(entity, 'input keyevent 224').catch(() => null); // sveglia la Firestick
+  await adbCmd(entity, `am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT https://youtu.be/${it.id} -n ${APP_PKG}/.ui.MainActivity`);
+}
+
+const KEYS = { play: 126, pause: 127, stop: 86, next: 87, previous: 88 };
+export async function firestickCmd(entity, cmd) {
+  if (cmd === 'volume' || cmd === 'seek' || cmd === 'unjoin') return null;
+  const k = KEYS[cmd];
+  if (!k) return null;
+  return adbCmd(entity, 'input keyevent ' + k);
 }
 
 // entità che Home Assistant ha rifiutato per music_assistant.play_media (es. la TV vista via Cast)

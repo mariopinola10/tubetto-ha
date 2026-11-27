@@ -330,3 +330,10 @@ input[type=range] { accent-color: var(--accent); }
 .checkrow:hover { background: rgba(255,255,255,.06); }
 .checkrow input { width: 18px; height: 18px; }
 .modal-box textarea { width: 100%; box-sizing: border-box; background: rgba(255,255,255,.06); color: inherit; border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 8px; font-family: monospace; font-size: 12px; }
+
+/* ---------- Uscite: stanze indipendenti ---------- */
+.roomrow { display: flex; align-items: center; gap: 6px; padding: 2px 6px 2px 10px; min-width: 280px; }
+.roomrow .rname { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctxmenu .roomrow .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; font-size: 15px; text-align: center; }
+.roomrow .ron { color: #2e9e4f; }
+.roomhead { padding: 6px 10px; font-size: 12px; color: var(--muted, #667); }

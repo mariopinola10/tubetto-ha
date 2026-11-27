@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.9';
+const VERSION = '1.6.0';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -37,6 +37,7 @@ const REPO = (options.github_repo || 'mariopinola10/Tubetto').trim();
 const TOKEN = (options.github_token || '').trim();
 const STREAM_BASE = (options.stream_base_url || '').trim().replace(/\/+$/, '') || `http://${process.env.HOSTNAME || 'localhost'}:${PORT}`;
 setQuality(options.audio_quality || 'high');
+house.setFirestickOptions(options);
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -497,12 +498,12 @@ function serveHls(req, res, sid, file) {
 }
 
 // video in corso sulle TV: coda per avanti/indietro e passaggio automatico al successivo
-let houseVideo = null;
+// sessioni indipendenti per stanza: ognuna con la sua coda, i suoi comandi e il passaggio al brano dopo
+const roomSessions = new Map();
 let housePlayChain = Promise.resolve();
 let housePlaySeq = 0;
 
-async function playHouseVideo(idx) {
-  const hv = houseVideo;
+async function playHouseVideo(idx, hv) {
   if (!hv || idx < 0 || idx >= hv.items.length) throw new Error(idx < 0 ? 'Sei già al primo video' : 'Coda finita');
   const it = hv.items[idx];
   // TV: video per i video; per la musica la copertina (o il video se scelto nelle impostazioni).
@@ -581,9 +582,26 @@ async function playHouseVideo(idx) {
   log('[casa]', audio ? 'audio' : 'video', it.id, '→', hv.tv.map((p) => hv.vmap[p]).join(', '));
 }
 
+// passaggio automatico al brano dopo, per ogni TV (anche se nessun browser è aperto)
+setInterval(async () => {
+  for (const [p, hv] of roomSessions) {
+    if (hv.busy || !house.videoOf(p)) continue;
+    try {
+      const st = await house.state([p]);
+      if (!st) continue;
+      if (st.state === 'playing') hv.seenPlaying = true;
+      else if (hv.seenPlaying && (st.state === 'idle' || st.state === 'off') && Date.now() - hv.at > 15000) {
+        if (st.state === 'off' || hv.idx + 1 >= hv.items.length) { roomSessions.delete(p); continue; }
+        hv.busy = true;
+        await playHouseVideo(hv.idx + 1, hv).catch((e) => log('[casa] brano dopo non riuscito su', p, e.message));
+        hv.busy = false;
+      }
+    } catch (e) { /* riprovo */ }
+  }
+}, 5000);
+
 /** Riparte il video/copertina sulle TV DLNA dal secondo scelto. */
-async function seekHouseVideo(pos) {
-  const hv = houseVideo;
+async function seekHouseVideo(pos, hv) {
   const it = hv.items[hv.idx];
   if (!it) return;
   let seekable = false;
@@ -632,7 +650,7 @@ async function splitPlayers(players, video) {
 async function houseRadio(players, radioIt, video) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
   houseIds = [];
-  houseVideo = null;
+  for (const p of players) roomSessions.delete(p);
   await house.stopDirect(tv.flatMap((p) => [vmap[p], p]));
   for (const p of tv) { await house.playVideo(vmap[p], radioIt.url, radioIt.title || '', radioIt.thumb || '', 'audio/mpeg'); house.routeVideo(p, vmap[p]); }
   return rest.length ? await house.play(rest, [radioIt.url]) : { grouped: false };
@@ -640,12 +658,15 @@ async function houseRadio(players, radioIt, video) {
 
 async function houseItems(players, items, music, tvVideo, video, youtubeApp = true) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
-  if (tv.length) {
-    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo, youtubeApp };
-    await playHouseVideo(0);
-    return { video: true };
+  // ogni TV è una sessione a sé (si ferma e va avanti da sola)
+  for (const p of tv) {
+    const hv = { players: [p], tv: [p], vmap: { [p]: vmap[p] }, rest: [], items, idx: 0, music, tvVideo, youtubeApp };
+    roomSessions.set(p, hv);
+    await playHouseVideo(0, hv);
   }
-  houseVideo = null;
+  if (!rest.length) return { video: true };
+  players = rest;
+  for (const p of players) roomSessions.delete(p);
   house.clearVideo(players);
   houseIds = items.map((x) => x.id);
   prefetch(houseIds[0]);
@@ -735,16 +756,12 @@ const server = http.createServer(async (req, res) => {
       if (op === 'house/state') {
         const pls = (url.searchParams.get('players') || '').split(',').filter(Boolean);
         const st = await house.state(pls);
-        // video finito sulla TV: passo al successivo (come la coda di Music Assistant)
-        if (st && st.video && houseVideo && pls[0] === houseVideo.players[0]) {
-          if (st.state === 'playing') houseVideo.seenPlaying = true;
-          else if (houseVideo.seenPlaying && st.state === 'idle' && Date.now() - houseVideo.at > 15000 && houseVideo.idx + 1 < houseVideo.items.length) {
-            playHouseVideo(houseVideo.idx + 1).catch((e) => log('[casa] video successivo non riuscito:', e.message));
-          }
-          const cur = houseVideo.items[houseVideo.idx];
+        const hv = roomSessions.get(pls[0]);
+        if (st && st.video && hv) {
+          const cur = hv.items[hv.idx];
           if (cur) { st.videoId = cur.id; if (!st.title) st.title = cur.title || ''; }
-          if (houseVideo.offset) st.position = (st.position || 0) + houseVideo.offset;
-          if (cur && (!st.duration || houseVideo.offset)) {
+          if (hv.offset) st.position = (st.position || 0) + hv.offset;
+          if (cur && (!st.duration || hv.offset)) {
             const d = String(cur.duration || '').split(':').map(Number);
             if (d.length && !d.some(Number.isNaN)) st.duration = d.reduce((a, x) => a * 60 + x, 0) || st.duration;
           }
@@ -761,6 +778,16 @@ const server = http.createServer(async (req, res) => {
         await prev;
         res.on('close', () => release());
         if (myTurn !== housePlaySeq) { release(); return sendJson(res, 200, { ok: true, skipped: true, items: b.items || [], count: 0 }); }
+        // Firestick con l'app Tubetto: TV sull'HDMI giusto e video aperto nell'app
+        const apps = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('app:'));
+        if (apps.length) {
+          const it0 = (b.items || []).find((x) => x && /^[A-Za-z0-9_-]{11}$/.test(x.id));
+          if (!it0) return sendJson(res, 400, { error: 'Sulla Firestick si possono aprire solo video e brani di YouTube' });
+          for (const a of apps) await house.firestickPlay(a.slice(4), it0);
+          log('[firestick]', apps.join(', '), '←', it0.id);
+          b.players = (b.players || []).filter((x) => !String(x).startsWith('app:'));
+          if (!b.players.length) return sendJson(res, 200, { ok: true, count: 1, items: [it0], app: true });
+        }
         // radio web: Music Assistant apre direttamente lo stream della stazione
         const radioIt = (b.items || []).find((x) => x && String(x.id || '').startsWith('radio:') && /^https?:\/\//.test(x.url || ''));
         if (radioIt) {
@@ -776,9 +803,8 @@ const server = http.createServer(async (req, res) => {
           const { vmap, tv } = await splitPlayers((b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.')), b.video || {});
           if (!tv.length) return sendJson(res, 400, { error: 'Scegli una TV (📺) per guardare il film in casa' });
           await house.stopDirect(tv.flatMap((p) => [vmap[p], p]));
-          for (const p of tv) { await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || ''); house.routeVideo(p, vmap[p]); }
+          for (const p of tv) { await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || ''); house.routeVideo(p, vmap[p]); roomSessions.delete(p); }
           houseIds = [];
-          houseVideo = null;
           return sendJson(res, 200, { ok: true, count: 1, items: [film], video: true });
         }
         let items = (b.items || []).filter((x) => x && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, 80);
@@ -798,27 +824,30 @@ const server = http.createServer(async (req, res) => {
       if (op === 'house/cmd' && req.method === 'POST') {
         const b = await readBody(req);
         const pls = (b.players || []).filter(Boolean);
-        // TV DLNA: il flusso continuo non si può spostare, lo rifaccio partire dal punto scelto
-        if (houseVideo && b.cmd === 'seek' && pls[0] && house.videoOf(pls[0]) && !house.isCast(house.videoOf(pls[0]))) {
-          await seekHouseVideo(Math.max(0, Number(b.value) || 0));
-          return sendJson(res, 200, { ok: true });
-        }
-        // video sulle TV: la TV non ha una coda, avanti/indietro li gestisco io
-        if (houseVideo && pls[0] && house.videoOf(pls[0]) && (b.cmd === 'next' || b.cmd === 'previous')) {
-          await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));
-          return sendJson(res, 200, { ok: true });
-        }
-        if (b.cmd === 'stop') { houseVideo = null; killTvSessions(null); killTsSessions(null); }
-        let r = null;
-        try {
-          r = await house.command(pls, b.cmd, b.value);
-        } catch (e) {
-          if (!/queue is empty/i.test(e.message)) throw e;
-        }
-        // "play" non supportato dalla TV o coda svuotata: rimando il brano da dove eravamo
-        if (b.cmd === 'play' && (!r || r.unsupported)) {
-          if (houseVideo) await playHouseVideo(houseVideo.idx);
-          else if (houseIds.length) await house.play(pls, houseIds.map((id) => streamUrl({ id })));
+        for (const p of pls) {
+          // Firestick: tasti multimediali via ADB
+          if (p.startsWith('app:')) { await house.firestickCmd(p.slice(4), b.cmd); continue; }
+          const hv = roomSessions.get(p);
+          const ent = house.videoOf(p);
+          // TV DLNA: il flusso continuo non si può spostare, lo rifaccio partire dal punto scelto
+          if (hv && ent && b.cmd === 'seek' && !house.isCast(ent)) { await seekHouseVideo(Math.max(0, Number(b.value) || 0), hv); continue; }
+          // video sulle TV: la TV non ha una coda, avanti/indietro li gestisco io
+          if (hv && ent && (b.cmd === 'next' || b.cmd === 'previous')) { await playHouseVideo(hv.idx + (b.cmd === 'next' ? 1 : -1), hv); continue; }
+          if (b.cmd === 'stop') {
+            roomSessions.delete(p);
+            if (ent) { killTvSessions([ent]); killTsSessions([ent]); }
+          }
+          let r = null;
+          try {
+            r = await house.command([p], b.cmd, b.value);
+          } catch (e) {
+            if (!/queue is empty/i.test(e.message)) throw e;
+          }
+          // "play" non supportato dalla TV o coda svuotata: rimando il brano da dove eravamo
+          if (b.cmd === 'play' && (!r || r.unsupported)) {
+            if (hv) await playHouseVideo(hv.idx, hv);
+            else if (houseIds.length) await house.play([p], houseIds.map((id) => streamUrl({ id })));
+          }
         }
         return sendJson(res, 200, { ok: true });
       }

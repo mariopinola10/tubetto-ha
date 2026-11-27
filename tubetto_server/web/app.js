@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.9';
+const APP_VERSION = '1.6.0';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1467,7 +1467,8 @@ const pl = {
 };
 
 const media = () => $('#media');
-const isHouse = () => pl.target === 'house' && pl.players.length > 0;
+const roomsOn = new Set(LS.get('roomsOn', [])); // stanze/TV a cui ho mandato qualcosa (si fermano una per una)
+const isHouse = () => false; // la barra in basso comanda sempre questo dispositivo; le stanze dal menu 🎧
 const bothLocal = () => isHouse() && pl.alsoLocal;
 
 /** Riproduzione su questo dispositivo (anche insieme alle stanze). */
@@ -2033,60 +2034,74 @@ function playerNames() {
 
 function refreshOutputButton() {
   const b = $('#pbOutput');
-  b.classList.toggle('on', isHouse());
-  b.textContent = isHouse() ? (pl.alsoLocal ? '🏠🎧' : '🏠') : '🎧';
-  b.title = isHouse() ? 'In casa: ' + playerNames() + (pl.alsoLocal ? ' + questo dispositivo' : '') : 'Su questo dispositivo';
+  b.classList.toggle('on', roomsOn.size > 0);
+  b.textContent = roomsOn.size ? '🎧+' + roomsOn.size : '🎧';
+  b.title = roomsOn.size ? 'Questo dispositivo + ' + roomsOn.size + ' stanze' : 'Uscite: manda nelle stanze e sulle TV';
+}
+
+// ============================================================ Uscite: questo dispositivo + stanze indipendenti
+// La barra in basso comanda sempre questo browser. Ogni stanza/TV ha i suoi ▶ (manda il brano o video in corso) e ⏹.
+
+const saveRooms = () => { LS.set('roomsOn', [...roomsOn]); refreshOutputButton(); };
+
+async function sendToRoom(id) {
+  const hp = housePlayers.find((p) => p.id === id) || { id, name: id };
+  const items = pl.queue.slice(Math.max(0, pl.idx), Math.max(0, pl.idx) + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url, thumb: v.thumb, duration: v.duration }));
+  if (!items.length) return toast('Prima avvia un brano o un video qui');
+  const video = hp.video && hp.video !== 'app' ? { [id]: hp.video } : {};
+  toast('Invio a ' + hp.name + '…');
+  try {
+    await postApi('house/play', { players: [id], items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false), youtubeApp: !LS.get('tvOwnStream', false) });
+    roomsOn.add(id);
+    saveRooms();
+    toast('▶ In riproduzione su ' + hp.name);
+  } catch (e) {
+    toast(hp.name + ': ' + e.message, 6000);
+  }
+}
+
+async function stopRoom(id) {
+  const hp = housePlayers.find((p) => p.id === id) || { name: id };
+  try {
+    await postApi('house/cmd', { players: [id], cmd: 'stop' });
+    toast('⏹ Fermato: ' + hp.name);
+  } catch (e) {
+    toast(hp.name + ': ' + e.message, 5000);
+  }
+  roomsOn.delete(id);
+  saveRooms();
 }
 
 async function showOutputMenu(x, y) {
   try {
     housePlayers = (await api('house/players')).players || [];
-    const okIds = new Set(housePlayers.map((p) => p.id));
-    if (housePlayers.length && pl.players.some((id) => !okIds.has(id))) { pl.players = pl.players.filter((id) => okIds.has(id)); LS.set('housePlayers', pl.players); }
   } catch (e) {
     toast('Stanze non disponibili: ' + e.message, 4000);
     housePlayers = [];
   }
-  const sel = new Set(pl.players);
-  // Questo dispositivo e le stanze si possono scegliere insieme; si applica con "Suona nelle stanze scelte"
-  const entries = [
-    {
-      label: (pl.alsoLocal ? '☑ ' : '☐ ') + '🎧 Questo dispositivo',
-      run: () => {
-        pl.alsoLocal = !pl.alsoLocal;
-        LS.set('alsoLocal', pl.alsoLocal);
-        if (isHouse()) {
-          refreshOutputButton();
-          if (pl.alsoLocal) {
-            const t = pl.house && pl.house.position ? pl.house.position + (pl.house.state === 'playing' && pl.house.positionAt ? (Date.now() - Date.parse(pl.house.positionAt)) / 1000 : 0) : 0;
-            if (currentItem()) playLocal(Math.max(0, Math.floor(t)));
-          } else { media().pause(); setVideoPanelFor(true); }
-        }
-        setTimeout(() => showOutputMenu(x, y), 0);
-      },
-    },
-    '-',
-    ...housePlayers.map((p) => ({
-      label: (sel.has(p.id) ? '☑ ' : '☐ ') + p.name + (p.video ? ' 📺' : '') + (p.state === 'playing' ? ' ♪' : ''),
-      run: () => {
-        if (sel.has(p.id)) sel.delete(p.id); else sel.add(p.id);
-        pl.players = [...sel];
-        LS.set('housePlayers', pl.players);
-        setTimeout(() => showOutputMenu(x, y), 0);
-      },
-    })),
-    '-',
-    { label: '⏹ Ferma la musica in casa', run: () => { pl.houseActive = false; refreshPlayButton(); houseCmd('stop'); } },
-    {
-      label: '🏠 Suona nelle stanze scelte',
-      run: () => {
-        if (!pl.players.length && !pl.alsoLocal) return toast('Scegli questo dispositivo o almeno una stanza');
-        if (!pl.players.length) return switchTarget('local');
-        switchTarget('house');
-      },
-    },
-  ];
-  showMenu(entries, x, y);
+  const m = $('#ctxmenu');
+  const row = (p) => `<div class="roomrow">
+      <span class="rname" title="${esc(p.id)}">${roomsOn.has(p.id) ? '<b class="ron">●</b> ' : ''}${esc(p.name)}${p.app ? ' 📱' : p.video ? ' 📺' : ''}</span>
+      <button class="iconbtn" data-act="play" data-id="${esc(p.id)}" title="Manda qui il brano o video in corso">▶</button>
+      <button class="iconbtn" data-act="stop" data-id="${esc(p.id)}" title="Ferma">⏹</button>
+    </div>`;
+  m.innerHTML = `<div class="roomhead">🎧 Questo dispositivo: comandi nella barra in basso</div><hr>`
+    + (housePlayers.length ? housePlayers.map(row).join('') : '<div class="roomhead">Nessuna stanza trovata in Home Assistant</div>')
+    + (roomsOn.size ? '<hr><button data-act="stopall">⏹ Ferma tutte le stanze</button>' : '');
+  m.classList.remove('hidden');
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  m.style.top = Math.max(8, Math.min(y - h, window.innerHeight - h - 8)) + 'px';
+  m.onclick = async (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    e.stopPropagation();
+    b.disabled = true;
+    if (b.dataset.act === 'play') await sendToRoom(b.dataset.id);
+    else if (b.dataset.act === 'stop') await stopRoom(b.dataset.id);
+    else if (b.dataset.act === 'stopall') { for (const id of [...roomsOn]) await stopRoom(id); }
+    showOutputMenu(x, y);
+  };
 }
 
 function switchTarget(t) {
