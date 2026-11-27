@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.7';
+const VERSION = '1.5.9';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -379,10 +379,13 @@ const FONT = ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/shar
 /** Ingressi e codifica per la TV: 'video' = video di YouTube rimpacchettato, 'badge' = copertina + titolo + audio. */
 function tvInputArgs(it, mode, dir) {
   const k = sign(it.id);
-  const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${it.id}?k=${k}`;
+  const t = Math.max(0, Math.floor(it.startAt || 0));
+  // da un punto preciso (salto avanti/indietro sulle TV DLNA): il server riparte da lì
+  const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${it.id}?k=${k}${t ? '&t=' + t : ''}`;
+  const ss = t && it.seekable ? ['-ss', String(t)] : [];
   const args = ['-nostdin', '-loglevel', 'error'];
   if (mode === 'video') {
-    args.push('-i', local('video'), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2');
+    args.push(...ss, '-i', local('video'), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2');
   } else {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 't1.txt'), String(it.title || '').slice(0, 60));
@@ -394,7 +397,7 @@ function tvInputArgs(it, mode, dir) {
     const fc = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=20:2,eq=brightness=-0.3[bg];`
       + `[0:v]crop=iw:iw*9/16,scale=-2:440[fg];[bg][fg]overlay=(W-w)/2:70${txt},format=yuv420p[v]`;
     // l'audio: dal brano; se il brano non si apre, dal video (stesso suono)
-    args.push('-loop', '1', '-framerate', '10', '-i', thumb, '-i', local(it.audioFrom || 'stream'), '-filter_complex', fc,
+    args.push('-loop', '1', '-framerate', '10', '-i', thumb, ...ss, '-i', local(it.audioFrom || 'stream'), '-filter_complex', fc,
       '-map', '[v]', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-profile:v', 'main', '-level', '4.0', '-r', '10', '-g', '20',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-shortest');
   }
@@ -512,6 +515,9 @@ async function playHouseVideo(idx) {
     try { await resolve(it.id, 'audio', false); } catch (e) { if (vOk) itx.audioFrom = 'video'; }
   }
   const mode = audio ? 'badge' : 'video';
+  hv.lastMode = mode;
+  hv.lastAudioFrom = itx.audioFrom;
+  hv.offset = 0;
   const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
   const ents = hv.tv.map((p) => hv.vmap[p]);
   // fermo il trasferimento precedente sulle TV (video, brano o Music Assistant sulla stessa TV)
@@ -573,6 +579,29 @@ async function playHouseVideo(idx) {
   prefetch(it.id);
   if (hv.items[idx + 1]) prefetch(hv.items[idx + 1].id);
   log('[casa]', audio ? 'audio' : 'video', it.id, '→', hv.tv.map((p) => hv.vmap[p]).join(', '));
+}
+
+/** Riparte il video/copertina sulle TV DLNA dal secondo scelto. */
+async function seekHouseVideo(pos) {
+  const hv = houseVideo;
+  const it = hv.items[hv.idx];
+  if (!it) return;
+  let seekable = false;
+  try { const src = await resolve(it.id, hv.lastMode === 'badge' ? 'audio' : 'video', false); seekable = !src.hls; } catch (e) { /* */ }
+  const itx = { ...it, startAt: pos, seekable, audioFrom: hv.lastAudioFrom };
+  const base = await lanBaseUrl();
+  for (const p of hv.tv) {
+    const ent = house.videoOf(p);
+    if (!ent || house.isCast(ent)) continue;
+    killTsSessions([ent]);
+    const url = `${base}/tvts/${tvTsUrlSession(itx, hv.lastMode || 'video', ent)}.ts`;
+    await house.stopDirect([ent]);
+    await house.playVideo(ent, url, [it.author, it.title].filter(Boolean).join(' - '), `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`, 'video/mpeg');
+  }
+  hv.offset = pos;
+  hv.at = Date.now();
+  hv.seenPlaying = false;
+  log('[tv] salto a', pos, 's per', it.id);
 }
 
 /** Entità rifiutate da Music Assistant: le segno e da lì in poi passano via Cast. */
@@ -714,6 +743,11 @@ const server = http.createServer(async (req, res) => {
           }
           const cur = houseVideo.items[houseVideo.idx];
           if (cur) { st.videoId = cur.id; if (!st.title) st.title = cur.title || ''; }
+          if (houseVideo.offset) st.position = (st.position || 0) + houseVideo.offset;
+          if (cur && (!st.duration || houseVideo.offset)) {
+            const d = String(cur.duration || '').split(':').map(Number);
+            if (d.length && !d.some(Number.isNaN)) st.duration = d.reduce((a, x) => a * 60 + x, 0) || st.duration;
+          }
         }
         return sendJson(res, 200, st);
       }
@@ -764,6 +798,11 @@ const server = http.createServer(async (req, res) => {
       if (op === 'house/cmd' && req.method === 'POST') {
         const b = await readBody(req);
         const pls = (b.players || []).filter(Boolean);
+        // TV DLNA: il flusso continuo non si può spostare, lo rifaccio partire dal punto scelto
+        if (houseVideo && b.cmd === 'seek' && pls[0] && house.videoOf(pls[0]) && !house.isCast(house.videoOf(pls[0]))) {
+          await seekHouseVideo(Math.max(0, Number(b.value) || 0));
+          return sendJson(res, 200, { ok: true });
+        }
         // video sulle TV: la TV non ha una coda, avanti/indietro li gestisco io
         if (houseVideo && pls[0] && house.videoOf(pls[0]) && (b.cmd === 'next' || b.cmd === 'previous')) {
           await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));

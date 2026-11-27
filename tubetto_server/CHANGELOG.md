@@ -1,3 +1,13 @@
+# 1.5.9
+- 📺 Ogni stanza usa per prima la sua TV Google Cast con lo stesso nome (es. "TV dello studio" → media_player.tv_dello_studio)
+  invece del DLNA: i video si aprono nell'app YouTube della TV.
+
+# 1.5.8
+- Comandi indipendenti: con "questo dispositivo" insieme alle stanze, il browser ha play/pausa/barra nel riquadro
+  del video; la barra in basso comanda solo la casa.
+- Salto avanti/indietro sulle TV DLNA (errore "Seek failed, upnp 402"): il flusso riparte dal punto scelto;
+  la posizione mostrata tiene conto del salto.
+
 # 1.5.7
 - 📺 TV Google Cast: i video si aprono nell'app YouTube della TV (come trasmettere dal telefono). Niente flussi dal
   server: leggero, si può saltare, qualità piena. Per avere il video senza pubblicità tramite Tubetto Server:

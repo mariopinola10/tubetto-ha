@@ -110,7 +110,7 @@ export async function players() {
     musicAssistant: ids.length > 0,
     players: [...byName.values()].map((s) => {
       const k = norm(nameOf(s));
-      const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => sameTv(x, s)) || videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
+      const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => castIds.has(x.entity_id) && (sameTv(x, s) || norm(nameOf(x)) === k)) || videoCapable.find((x) => sameTv(x, s)) || videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
       return {
         id: s.entity_id,
         name: nameOf(s).replace(/\s*♪\s*$/, ''),

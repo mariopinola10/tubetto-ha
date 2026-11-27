@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.7';
+const APP_VERSION = '1.5.9';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1481,7 +1481,9 @@ function playLocal(t = 0) {
   pl.offset = 0;
   pl.lastProgress = Date.now();
   const m = media();
-  $('#videoPanel').classList.toggle('off', !!pl.music);
+  // insieme alle stanze il browser ha i suoi comandi (play/pausa/barra) nel riquadro: la barra in basso comanda la casa
+  m.controls = isHouse();
+  $('#videoPanel').classList.toggle('off', !!pl.music && !isHouse());
   m.src = v.kind === 'RADIO' ? radioSrc(v) : v.kind === 'FILM' ? v.url : srcFor(v, pl.music ? 'audio' : 'video', t);
   if (t > 0 && v.kind !== 'RADIO' && v.kind !== 'FILM') pl.offset = t;
   m.play().catch(() => { /* serve un tocco dell'utente */ });
@@ -1745,7 +1747,6 @@ function togglePlay() {
     // in casa il tasto ferma tutto o rimanda il brano alle uscite scelte (le TV non sempre hanno pausa/play)
     if (pl.houseActive) {
       pl.houseActive = false;
-      if (bothLocal()) media().pause();
       refreshPlayButton();
       return houseCmd('stop');
     }
@@ -1909,6 +1910,7 @@ function renderQueue() {
 
 function setVideoPanelFor(music) {
   const p = $('#videoPanel');
+  media().controls = bothLocal();
   p.classList.toggle('off', music || (isHouse() && !pl.alsoLocal));
 }
 
@@ -1916,7 +1918,6 @@ function seekTo(fraction) {
   if (isHouse()) {
     const d = (pl.house && pl.house.duration) || 0;
     if (d) houseCmd('seek', Math.round(fraction * d));
-    if (bothLocal()) { const m = media(); if (isFinite(m.duration) && m.duration > 0) m.currentTime = fraction * m.duration; }
     return;
   }
   const m = media();
