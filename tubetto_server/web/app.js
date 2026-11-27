@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.6.1';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -2049,7 +2049,7 @@ async function sendToRoom(id) {
   const items = pl.queue.slice(Math.max(0, pl.idx), Math.max(0, pl.idx) + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url, thumb: v.thumb, duration: v.duration }));
   if (!items.length) return toast('Prima avvia un brano o un video qui');
   const video = hp.video && hp.video !== 'app' ? { [id]: hp.video } : {};
-  toast('Invio a ' + hp.name + '…');
+  toast('Invio a ' + hp.name + '… (se è spenta la accendo, ci vuole qualche secondo)');
   try {
     await postApi('house/play', { players: [id], items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false), youtubeApp: !LS.get('tvOwnStream', false) });
     roomsOn.add(id);
@@ -2072,6 +2072,19 @@ async function stopRoom(id) {
   saveRooms();
 }
 
+async function offRoom(id) {
+  const hp = housePlayers.find((p) => p.id === id) || { name: id };
+  toast('Spengo ' + hp.name + '…');
+  try {
+    await postApi('house/cmd', { players: [id], cmd: 'off' });
+    toast('⏻ Spenta: ' + hp.name);
+  } catch (e) {
+    toast(hp.name + ': ' + e.message, 6000);
+  }
+  roomsOn.delete(id);
+  saveRooms();
+}
+
 async function showOutputMenu(x, y) {
   try {
     housePlayers = (await api('house/players')).players || [];
@@ -2084,6 +2097,7 @@ async function showOutputMenu(x, y) {
       <span class="rname" title="${esc(p.id)}">${roomsOn.has(p.id) ? '<b class="ron">●</b> ' : ''}${esc(p.name)}${p.app ? ' 📱' : p.video ? ' 📺' : ''}</span>
       <button class="iconbtn" data-act="play" data-id="${esc(p.id)}" title="Manda qui il brano o video in corso">▶</button>
       <button class="iconbtn" data-act="stop" data-id="${esc(p.id)}" title="Ferma">⏹</button>
+      ${p.video ? `<button class="iconbtn" data-act="off" data-id="${esc(p.id)}" title="Spegni la TV${p.script ? ' (sequenza personalizzata: ' + esc(p.script) + '_spegni)' : ''}">⏻</button>` : '<span class="iconpad"></span>'}
     </div>`;
   m.innerHTML = `<div class="roomhead">🎧 Questo dispositivo: comandi nella barra in basso</div><hr>`
     + (housePlayers.length ? housePlayers.map(row).join('') : '<div class="roomhead">Nessuna stanza trovata in Home Assistant</div>')
@@ -2099,6 +2113,7 @@ async function showOutputMenu(x, y) {
     b.disabled = true;
     if (b.dataset.act === 'play') await sendToRoom(b.dataset.id);
     else if (b.dataset.act === 'stop') await stopRoom(b.dataset.id);
+    else if (b.dataset.act === 'off') await offRoom(b.dataset.id);
     else if (b.dataset.act === 'stopall') { for (const id of [...roomsOn]) await stopRoom(id); }
     showOutputMenu(x, y);
   };

@@ -337,3 +337,4 @@ input[type=range] { accent-color: var(--accent); }
 .ctxmenu .roomrow .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; font-size: 15px; text-align: center; }
 .roomrow .ron { color: #2e9e4f; }
 .roomhead { padding: 6px 10px; font-size: 12px; color: var(--muted, #667); }
+.roomrow .iconpad { width: 34px; display: inline-block; }

@@ -1,3 +1,11 @@
+# 1.6.1
+- ▶ su una TV spenta: Tubetto la accende (Sony Bravia o Android Debug Bridge della stessa stanza), aspetta che
+  Google Cast/DLNA risponda e poi manda il video.
+- ⏻ nuovo tasto per ogni TV nel menu 🎧: ferma e spegne.
+- Sequenze personalizzate per stanza: se esistono gli script script.tubetto_<stanza>_accendi / _spegni
+  (il nome esatto è nel suggerimento del tasto ⏻), Tubetto usa quelli (es. salotto: TV, macro, ingresso Firestick, HDMI 1).
+- Firestick: se l'app non era già aperta, il video viene rimandato dopo 7 secondi (al primo invio partiva solo l'app).
+
 # 1.6.0
 - Nuovo modo di usare le uscite: si ascolta e si guarda nel browser di Home Assistant (la barra in basso comanda solo
   questo dispositivo). Dal menu 🎧 ogni stanza/TV ha i suoi ▶ (manda il brano o video in corso) e ⏹ (ferma solo lei).

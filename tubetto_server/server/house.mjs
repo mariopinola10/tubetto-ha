@@ -109,7 +109,7 @@ export async function players() {
   const fs = await firesticks().catch(() => []);
   return {
     musicAssistant: ids.length > 0,
-    players: [...fs.map((f) => ({ id: 'app:' + f.entity, name: f.name + ' (app Tubetto)', state: f.state, video: 'app', app: true })), ...[...byName.values()].map((s) => {
+    players: [...fs.map((f) => ({ id: 'app:' + f.entity, name: f.name + ' (app Tubetto)', state: f.state, video: 'app', app: true, script: 'script.tubetto_' + roomSlug(f.name) })), ...[...byName.values()].map((s) => {
       const k = norm(nameOf(s));
       const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => castIds.has(x.entity_id) && (sameTv(x, s) || norm(nameOf(x)) === k)) || videoCapable.find((x) => sameTv(x, s)) || videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
       return {
@@ -119,6 +119,7 @@ export async function players() {
         volume: s.attributes && s.attributes.volume_level,
         group: (s.attributes && s.attributes.group_members) || [],
         video: v ? v.entity_id : null,
+        script: 'script.tubetto_' + roomSlug(nameOf(s).replace(/\s*♪\s*$/, '')),
       };
     })].sort((a, b) => a.name.localeCompare(b.name)),
   };
@@ -176,12 +177,17 @@ const adbCmd = (entity, command) => service('androidtv', 'adb_command', { entity
 
 /** Accende la TV, la porta sull'HDMI della Firestick e apre il video nell'app Tubetto. */
 export async function firestickPlay(entity, it) {
-  const f = (await firesticks()).find((x) => x.entity === entity) || { entity, tv: fsOpts.firestick_tv || '' };
-  if (f.tv) {
+  const f = (await firesticks()).find((x) => x.entity === entity) || { entity, name: entity, tv: fsOpts.firestick_tv || '' };
+  const script = await roomScript(f.name, 'accendi');
+  if (script) {
+    // sequenza personalizzata (es. TV, macro, ingresso Firestick, HDMI 1 con le pause giuste)
+    console.log('[firestick] accendo con', script);
+    await service('script', script.replace('script.', ''), {}).catch((e) => console.log('[firestick] script non riuscito:', e.message));
+  } else if (f.tv) {
     const tvState = await ha('GET', '/states/' + f.tv).catch(() => null);
-    if (!tvState || tvState.state === 'off' || tvState.state === 'standby') {
+    if (isOff(tvState)) {
       await service('media_player', 'turn_on', { entity_id: f.tv }).catch(() => null);
-      await new Promise((ok) => setTimeout(ok, 6000));
+      await sleep(6000);
     }
     const list = ((await ha('GET', '/states/' + f.tv).catch(() => ({}))).attributes || {}).source_list || [];
     const want = fsOpts.firestick_hdmi || 'HDMI 1';
@@ -189,8 +195,27 @@ export async function firestickPlay(entity, it) {
     const src = list.find((x) => norm(x) === norm(want)) || list.find((x) => norm(x).startsWith(norm(want))) || want;
     await service('media_player', 'select_source', { entity_id: f.tv, source: src }).catch((e) => console.log('[firestick] cambio ingresso non riuscito:', e.message));
   }
+  const before = await ha('GET', '/states/' + entity).catch(() => null);
+  const running = before && before.attributes && before.attributes.app_id === APP_PKG && !isOff(before);
   await adbCmd(entity, 'input keyevent 224').catch(() => null); // sveglia la Firestick
-  await adbCmd(entity, `am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT https://youtu.be/${it.id} -n ${APP_PKG}/.ui.MainActivity`);
+  const open = () => adbCmd(entity, `am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT https://youtu.be/${it.id} -n ${APP_PKG}/.ui.MainActivity`);
+  await open();
+  // app appena aperta: il primo invio può arrivare prima che sia pronta, lo ripeto
+  if (!running) { await sleep(7000); await open().catch(() => null); }
+}
+
+export async function firestickOff(entity) {
+  const f = (await firesticks()).find((x) => x.entity === entity) || { entity, name: entity, tv: fsOpts.firestick_tv || '' };
+  await adbCmd(entity, 'input keyevent 86').catch(() => null);
+  const script = await roomScript(f.name, 'spegni');
+  if (script) { console.log('[firestick] spengo con', script); return service('script', script.replace('script.', ''), {}); }
+  await adbCmd(entity, 'input keyevent 223').catch(() => null); // Firestick a riposo
+  if (f.tv) await service('media_player', 'turn_off', { entity_id: f.tv }).catch(() => null);
+}
+
+export async function firestickName(entity) {
+  const f = (await firesticks()).find((x) => x.entity === entity);
+  return f ? f.name : entity;
 }
 
 const KEYS = { play: 126, pause: 127, stop: 86, next: 87, previous: 88 };
@@ -375,4 +400,88 @@ export async function state(players) {
     duration: a.media_duration || 0,
     volume: a.volume_level,
   };
+}
+
+
+// ------------------------------------------------------------------ accensione / spegnimento delle TV
+
+const POWER_GENERIC = new Set(['tv', 'the', 'di', 'del', 'della', 'dello', 'da', 'app', 'tubetto', 'media', 'player', 'firestick', 'fire', 'stick', 'aftss']);
+const words = (n) => String(n || '').toLowerCase().replace(/\(.*?\)/g, ' ').split(/[^a-zà-ù0-9]+/).filter((w) => w.length > 2 && !POWER_GENERIC.has(w));
+export const roomSlug = (n) => slug(n);
+const slug = (n) => String(n || '').toLowerCase().replace(/\(.*?\)/g, ' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+/** Script personalizzato della stanza, se esiste: script.tubetto_<nome stanza>_accendi / _spegni. */
+async function roomScript(roomName, action) {
+  const id = `script.tubetto_${slug(roomName)}_${action}`;
+  const st = await ha('GET', '/states/' + id).catch(() => null);
+  return st ? id : null;
+}
+
+/** Entità che accende/spegne la TV della stanza: Sony Bravia o Android Debug Bridge con una parola del nome in comune. */
+async function powerEntity(roomName, videoEnt) {
+  const list = await tpl("{{ (integration_entities('braviatv') + integration_entities('androidtv')) | select('match', 'media_player\\\\.') | list | tojson }}").catch(() => []);
+  const want = new Set([...words(roomName)]);
+  if (videoEnt) {
+    const vs = await ha('GET', '/states/' + videoEnt).catch(() => null);
+    for (const w of words(vs && vs.attributes && vs.attributes.friendly_name)) want.add(w);
+  }
+  if (!want.size) return null;
+  let best = null, bestScore = 0;
+  for (const e of list) {
+    const st = await ha('GET', '/states/' + e).catch(() => null);
+    const dn = await tpl(`{{ (device_attr(device_id('${e}'), 'name_by_user') or device_attr(device_id('${e}'), 'name') or '') | tojson }}`).catch(() => '');
+    const ws = new Set([...words(st && st.attributes && st.attributes.friendly_name), ...words(dn), ...words(e.replace('media_player.', ''))]);
+    // la Firestick non accende la TV: preferisco la TV vera
+    if (/fire|aftss/i.test(`${e} ${dn}`)) continue;
+    const score = [...want].filter((w) => ws.has(w)).length;
+    if (score > bestScore) { best = e; bestScore = score; }
+  }
+  return best;
+}
+
+const isOff = (st) => !st || ['off', 'standby', 'unavailable', 'unknown'].includes(st.state);
+
+/** Accende la TV della stanza se è spenta (script personalizzato o Bravia/ADB) e aspetta che sia pronta. */
+export async function powerOn(roomName, videoEnt) {
+  const script = await roomScript(roomName, 'accendi');
+  if (script) {
+    console.log('[tv] accendo', roomName, 'con', script);
+    await service('script', script.replace('script.', ''), {}).catch((e) => console.log('[tv] script non riuscito:', e.message));
+  } else {
+    const vs = videoEnt ? await ha('GET', '/states/' + videoEnt).catch(() => null) : null;
+    const pe = await powerEntity(roomName, videoEnt);
+    const ps = pe ? await ha('GET', '/states/' + pe).catch(() => null) : null;
+    if (!(videoEnt && !isOff(vs)) && pe && isOff(ps)) {
+      console.log('[tv] accendo', roomName, 'con', pe);
+      await service('media_player', 'turn_on', { entity_id: pe }).catch((e) => console.log('[tv] accensione non riuscita:', e.message));
+    } else if (!(videoEnt && isOff(vs))) return false;
+  }
+  // aspetto che la TV (Cast/DLNA) risponda
+  if (videoEnt) {
+    for (let i = 0; i < 40; i++) {
+      const st = await ha('GET', '/states/' + videoEnt).catch(() => null);
+      if (!isOff(st)) { await sleep(3000); return true; }
+      await sleep(1000);
+    }
+  } else await sleep(8000);
+  return true;
+}
+
+/** Spegne la TV della stanza (script personalizzato o Bravia/ADB, poi la TV Cast). */
+export async function powerOff(roomName, videoEnt) {
+  const script = await roomScript(roomName, 'spegni');
+  if (script) {
+    console.log('[tv] spengo', roomName, 'con', script);
+    return service('script', script.replace('script.', ''), {});
+  }
+  const pe = await powerEntity(roomName, videoEnt);
+  if (pe) await service('media_player', 'turn_off', { entity_id: pe }).catch((e) => console.log('[tv] spegnimento non riuscito:', e.message));
+  if (videoEnt && videoEnt !== pe) await service('media_player', 'turn_off', { entity_id: videoEnt }).catch(() => null);
+  if (!pe && !videoEnt) throw new Error('Non trovo come spegnere questa TV: crea lo script script.tubetto_' + slug(roomName) + '_spegni');
+}
+
+export async function nameOf(entity) {
+  const st = await ha('GET', '/states/' + entity).catch(() => null);
+  return (st && st.attributes && st.attributes.friendly_name) || entity;
 }

@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.6.0';
+const VERSION = '1.6.1';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -658,8 +658,9 @@ async function houseRadio(players, radioIt, video) {
 
 async function houseItems(players, items, music, tvVideo, video, youtubeApp = true) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
-  // ogni TV è una sessione a sé (si ferma e va avanti da sola)
+  // ogni TV è una sessione a sé (si ferma e va avanti da sola); se è spenta la accendo prima
   for (const p of tv) {
+    try { await house.powerOn(await house.nameOf(p), vmap[p]); } catch (e) { log('[tv] accensione di', p, 'non riuscita:', e.message); }
     const hv = { players: [p], tv: [p], vmap: { [p]: vmap[p] }, rest: [], items, idx: 0, music, tvVideo, youtubeApp };
     roomSessions.set(p, hv);
     await playHouseVideo(0, hv);
@@ -825,8 +826,16 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const pls = (b.players || []).filter(Boolean);
         for (const p of pls) {
-          // Firestick: tasti multimediali via ADB
-          if (p.startsWith('app:')) { await house.firestickCmd(p.slice(4), b.cmd); continue; }
+          // Firestick: tasti multimediali via ADB; "off" spegne Firestick, TV (e la sequenza personalizzata)
+          if (p.startsWith('app:')) { if (b.cmd === 'off') await house.firestickOff(p.slice(4)); else await house.firestickCmd(p.slice(4), b.cmd); continue; }
+          if (b.cmd === 'off') {
+            const ent = house.videoOf(p);
+            roomSessions.delete(p);
+            if (ent) { killTvSessions([ent]); killTsSessions([ent]); }
+            await house.command([p], 'stop').catch(() => null);
+            await house.powerOff(await house.nameOf(p), ent || ((await house.players()).players.find((x) => x.id === p) || {}).video);
+            continue;
+          }
           const hv = roomSessions.get(p);
           const ent = house.videoOf(p);
           // TV DLNA: il flusso continuo non si può spostare, lo rifaccio partire dal punto scelto
