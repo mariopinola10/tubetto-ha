@@ -1,3 +1,8 @@
+# 1.5.3
+- Video neri e muti (browser e TV): i link video dei client diretti di YouTube si interrompevano dopo il primo pezzo.
+  Per i video ora si usa prima yt-dlp con PO token (link stabili), poi i client diretti. La risposta di yt-dlp
+  viene riusata per 20 minuti, così i controlli non rallentano l'avvio.
+
 # 1.5.2
 - 📺 TV collegate in DLNA (es. Sony "TV Studio", senza Google Cast): non aprono l'HLS. Ora ricevono un MP4 normale
   quando YouTube dà lo stream unico, altrimenti un flusso MPEG-TS continuo (H.264+AAC) come la TV digitale.

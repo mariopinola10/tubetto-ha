@@ -308,7 +308,19 @@ async function fromInnertube(videoId, kind, preferItag) {
   throw new Error(errors.join(' | ') || 'nessun client');
 }
 
+// risposta di yt-dlp riusata per qualche minuto (video, solo-video e controlli chiedono lo stesso brano)
+const ytdlpCache = new Map();
 function ytdlpJson(videoId) {
+  const c = ytdlpCache.get(videoId);
+  if (c && Date.now() - c.t < 20 * 60000) return c.p;
+  const p = ytdlpJsonRun(videoId);
+  ytdlpCache.set(videoId, { t: Date.now(), p });
+  p.catch(() => ytdlpCache.delete(videoId));
+  if (ytdlpCache.size > 200) ytdlpCache.delete(ytdlpCache.keys().next().value);
+  return p;
+}
+
+function ytdlpJsonRun(videoId) {
   return new Promise((resolve, reject) => {
     const args = [
       '-J', '--no-warnings', '--no-playlist',
@@ -397,12 +409,22 @@ export function reportBroken(videoId, kind, via) {
  */
 export async function resolve(videoId, kind = 'audio', force = false, preferItag = 0) {
   const key = kind + ':' + videoId;
+  if (force) ytdlpCache.delete(videoId);
   const c = cache.get(key);
   if (!force && c && Date.now() < c.expires) return c.src;
   let src;
   const hasCookies = fs.existsSync(COOKIES);
   if (!hasCookies && accountOnly.get(videoId) > Date.now()) {
     throw new Error('ACCOUNT: YouTube mostra questo brano solo con un account (età o accesso limitato)');
+  }
+  // VIDEO: prima yt-dlp (PO token: i link non si interrompono dopo il primo MB come quelli dei client diretti)
+  if (kind !== 'audio') {
+    try {
+      src = await fromYtdlp(videoId, kind);
+      const exp0 = Number((/[?&/]expire[=/](\d+)/.exec(src.url) || [])[1]) * 1000;
+      cache.set(key, { src, expires: exp0 ? exp0 - 10 * 60000 : Date.now() + 3 * 3600000 });
+      return src;
+    } catch (e) { /* provo i client diretti */ }
   }
   try {
     if (Date.now() < innertubeDownUntil) throw new Error('InnerTube diretto bloccato da poco: uso yt-dlp con PO token');
