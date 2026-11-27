@@ -217,6 +217,9 @@ function pickMuxed(formats, preferItag) {
 }
 
 async function contentLength(url, ua) {
+  // i link di YouTube riportano già la lunghezza nel parametro clen
+  const q = /[?&/]clen[=/](\d+)/.exec(url);
+  if (q && Number(q[1]) > 0) return Number(q[1]);
   const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'range=0-0', { headers: { 'User-Agent': ua }, signal: AbortSignal.timeout(10000) });
   if (!r.ok) throw new Error(`stream HTTP ${r.status}`);
   const cr = r.headers.get('content-range');

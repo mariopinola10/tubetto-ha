@@ -125,6 +125,11 @@ export const notMa = new Set();
 export const noUrl = new Set();
 let castIds = new Set();
 
+export function isCast(entity) { return castIds.has(entity); }
+
+/** Entità che riproducono un link: Google Cast per prime, poi DLNA. */
+export async function refreshUrlPlayers() { return urlPlayers(); }
+
 /** Entità che riproducono un link: Google Cast per prime, poi DLNA. */
 async function urlPlayers() {
   try {

@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.1';
+const VERSION = '1.5.2';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -266,6 +266,8 @@ async function proxy(req, res, videoId, kind, startAt = 0) {
     'Access-Control-Allow-Origin': '*',
     'X-Tubetto-Duration': String(src.lengthSeconds || 0),
   };
+  // per i lettori DLNA delle TV: si può saltare avanti e indietro
+  if (kind === 'video') Object.assign(headers, { 'transferMode.dlna.org': 'Streaming', 'contentFeatures.dlna.org': 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000' });
   if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${total}`;
   res.writeHead(status, headers);
   if (req.method === 'HEAD') return res.end();
@@ -374,16 +376,15 @@ try { fs.rmSync(HLS_DIR, { recursive: true, force: true }); } catch (e) { /* nie
 const FONT = ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find((f) => fs.existsSync(f));
 
 /** Avvia l'HLS per una TV e aspetta il primo pezzo. mode: 'video' | 'badge'. */
-async function startTvHls(it, mode, entity) {
-  const sid = crypto.randomBytes(8).toString('hex');
-  const dir = path.join(HLS_DIR, sid);
-  fs.mkdirSync(dir, { recursive: true });
+/** Ingressi e codifica per la TV: 'video' = video di YouTube rimpacchettato, 'badge' = copertina + titolo + audio. */
+function tvInputArgs(it, mode, dir) {
   const k = sign(it.id);
   const local = (kind) => `http://127.0.0.1:${PORT}/${kind}/${it.id}?k=${k}`;
   const args = ['-nostdin', '-loglevel', 'error'];
   if (mode === 'video') {
     args.push('-i', local('video'), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ac', '2');
   } else {
+    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 't1.txt'), String(it.title || '').slice(0, 60));
     fs.writeFileSync(path.join(dir, 't2.txt'), String(it.author || '').slice(0, 60));
     const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
@@ -392,10 +393,63 @@ async function startTvHls(it, mode, entity) {
       : '';
     const fc = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=20:2,eq=brightness=-0.3[bg];`
       + `[0:v]crop=iw:iw*9/16,scale=-2:440[fg];[bg][fg]overlay=(W-w)/2:70${txt},format=yuv420p[v]`;
-    args.push('-loop', '1', '-framerate', '5', '-i', thumb, '-i', local('stream'), '-filter_complex', fc,
-      '-map', '[v]', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-r', '5', '-g', '20',
+    // l'audio: dal brano; se il brano non si apre, dal video (stesso suono)
+    args.push('-loop', '1', '-framerate', '10', '-i', thumb, '-i', local(it.audioFrom || 'stream'), '-filter_complex', fc,
+      '-map', '[v]', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-profile:v', 'main', '-level', '4.0', '-r', '10', '-g', '20',
       '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-shortest');
   }
+  return args;
+}
+
+// ------------------------------------------------------------------ TV DLNA (Sony, LG…): flusso MPEG-TS continuo
+// Il lettore DLNA non apre l'HLS: riceve un unico flusso .ts (come la TV digitale), creato a ogni richiesta.
+const tsSessions = new Map(); // sid → { it, mode, entity, at, ff }
+
+function tvTsUrlSession(it, mode, entity) {
+  const sid = crypto.randomBytes(8).toString('hex');
+  tsSessions.set(sid, { it, mode, entity, at: Date.now(), ff: null });
+  for (const [k, t] of tsSessions) if (Date.now() - t.at > 4 * 3600000) { try { t.ff && t.ff.kill('SIGKILL'); } catch (e) { /* */ } tsSessions.delete(k); }
+  return sid;
+}
+
+function killTsSessions(entities) {
+  for (const [sid, t] of tsSessions) {
+    if (entities && !entities.some((e) => String(t.entity).split(',').includes(e))) continue;
+    try { t.ff && t.ff.kill('SIGKILL'); } catch (e) { /* */ }
+    tsSessions.delete(sid);
+  }
+}
+
+const DLNA_HEADERS = {
+  'transferMode.dlna.org': 'Streaming',
+  'contentFeatures.dlna.org': 'DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000',
+};
+
+function serveTvTs(req, res, sid) {
+  const t = tsSessions.get(sid);
+  if (!t) return sendJson(res, 404, { error: 'Sessione finita' });
+  res.writeHead(200, { 'Content-Type': 'video/mpeg', 'Cache-Control': 'no-store', 'Accept-Ranges': 'none', 'Access-Control-Allow-Origin': '*', ...DLNA_HEADERS });
+  if (req.method === 'HEAD') return res.end();
+  // la TV a volte riapre il flusso: chiudo quello vecchio
+  try { t.ff && t.ff.kill('SIGKILL'); } catch (e) { /* */ }
+  const args = [...tvInputArgs(t.it, t.mode, path.join(HLS_DIR, 'ts-' + sid)), '-f', 'mpegts', '-mpegts_flags', 'resend_headers', 'pipe:1'];
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.ff = ff;
+  let err = '';
+  ff.stderr.on('data', (d) => { err = (err + d).slice(-600); });
+  ff.stdout.pipe(res);
+  res.on('close', () => { try { ff.kill('SIGKILL'); } catch (e) { /* */ } });
+  ff.on('close', (code) => {
+    if (code && !res.destroyed) log('[tv]', t.mode, t.it.id, 'flusso TS ffmpeg codice', code, err.trim().split('\n').pop());
+    res.end();
+  });
+}
+
+async function startTvHls(it, mode, entity) {
+  const sid = crypto.randomBytes(8).toString('hex');
+  const dir = path.join(HLS_DIR, sid);
+  fs.mkdirSync(dir, { recursive: true });
+  const args = tvInputArgs(it, mode, dir);
   args.push('-f', 'hls', '-hls_time', '4', '-hls_list_size', '0', '-hls_playlist_type', 'event',
     '-hls_segment_filename', path.join(dir, 's%05d.ts'), path.join(dir, 'index.m3u8'));
   const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -443,42 +497,50 @@ async function playHouseVideo(idx) {
   if (!hv || idx < 0 || idx >= hv.items.length) throw new Error(idx < 0 ? 'Sei già al primo video' : 'Coda finita');
   const it = hv.items[idx];
   // TV: video per i video; per la musica la copertina (o il video se scelto nelle impostazioni).
-  // Se il video non è disponibile, arriva comunque l'audio con la copertina.
   let audio = hv.music && !hv.tvVideo;
-  if (!audio) {
-    if (!(await videoPlayable(it.id))) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
+  const vOk = await videoPlayable(it.id);
+  if (!audio && !vOk) { audio = true; log('[casa] video non disponibile per', it.id, ': mando copertina e audio'); }
+  const itx = { ...it };
+  if (audio) {
+    // copertina: l'audio viene dal brano, o dal video se il brano non si apre
+    try { await resolve(it.id, 'audio', false); } catch (e) { if (vOk) itx.audioFrom = 'video'; }
   }
+  const mode = audio ? 'badge' : 'video';
   const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
+  const ents = hv.tv.map((p) => hv.vmap[p]);
   // fermo il trasferimento precedente sulle TV (video, brano o Music Assistant sulla stessa TV)
   await house.stopDirect(hv.tv.flatMap((p) => [hv.vmap[p], p !== hv.vmap[p] ? p : null]));
-  killTvSessions(hv.tv.map((p) => hv.vmap[p]));
-  const ents = hv.tv.map((p) => hv.vmap[p]).join(',');
-  let u;
-  try { u = await startTvHls(it, audio ? 'badge' : 'video', ents); } catch (e) {
-    if (audio) {
-      // badge non riuscito (audio non disponibile): provo con il video di YouTube
-      log('[tv] copertina non riuscita per', it.id, '(' + e.message + '): provo il video');
-      killTvSessions(hv.tv.map((p) => hv.vmap[p]));
-      u = await startTvHls(it, 'video', ents);
-      audio = false;
-    } else {
-    log('[tv] video non riuscito per', it.id, '(' + e.message + '): mando copertina e audio');
-    audio = true;
-    killTvSessions(hv.tv.map((p) => hv.vmap[p]));
-    u = await startTvHls(it, 'badge', ents);
-    }
-  }
+  killTvSessions(ents);
+  killTsSessions(ents);
+  await house.refreshUrlPlayers();
+  const base = await lanBaseUrl();
+  let hls = null;
+  const title = [it.author, it.title].filter(Boolean).join(' - ') || it.id;
   const fallback = [];
   for (const p of hv.tv) {
+    const ent = hv.vmap[p];
+    let url = null, type = null;
     try {
-      await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, 'application/x-mpegURL');
-      house.routeVideo(p, hv.vmap[p]);
+      if (house.isCast(ent)) {
+        // Google Cast: HLS
+        if (!hls) hls = await startTvHls(itx, mode, ents.filter((e) => house.isCast(e)).join(','));
+        url = hls; type = 'application/x-mpegURL';
+      } else {
+        // DLNA: MP4 con lunghezza se c'è lo stream unico, altrimenti flusso MPEG-TS continuo
+        if (mode === 'video') {
+          try { const src = await resolve(it.id, 'video', false); if (!src.hls) { url = await videoUrl(it); type = 'video/mp4'; } } catch (e) { /* uso il TS */ }
+        }
+        if (!url) { url = `${base}/tvts/${tvTsUrlSession(itx, mode, ent)}.ts`; type = 'video/mpeg'; }
+      }
+      log('[tv]', mode, it.id, '→', ent, house.isCast(ent) ? '(Cast)' : '(DLNA)', type, url);
+      await house.playVideo(ent, url, title, thumb, type);
+      house.routeVideo(p, ent);
     } catch (e) {
       // l'entità non accetta link (es. integrazione Sony Bravia): la escludo e la stanza riceve via Music Assistant
       if (!/Invalid media type|does not support|not supported/i.test(e.message)) throw e;
-      house.noUrl.add(hv.vmap[p]);
-      log('[casa]', hv.vmap[p], 'non accetta link video:', e.message);
-      if (p !== hv.vmap[p]) fallback.push(p); else throw new Error(`${p} non può ricevere video né audio da un link: scegli la TV di Google Cast`);
+      house.noUrl.add(ent);
+      log('[casa]', ent, 'non accetta link video:', e.message);
+      if (p !== ent) fallback.push(p); else throw new Error(`${p} non può ricevere video da un link: scegli un'altra uscita`);
     }
   }
   if (fallback.length) {
@@ -576,6 +638,8 @@ const server = http.createServer(async (req, res) => {
     // HLS preparato per le TV (link con codice casuale, valido finché dura la riproduzione)
     const hm = /^\/hls\/([0-9a-f]{16})\/([^/]+)$/.exec(p);
     if (hm) return serveHls(req, res, hm[1], hm[2]);
+    const tm = /^\/tvts\/([0-9a-f]{16})\.ts$/.exec(p);
+    if (tm) return serveTvTs(req, res, tm[1]);
 
     // Radio web (dal pannello o con chiave)
     if (p === '/radiostream') {
@@ -674,7 +738,7 @@ const server = http.createServer(async (req, res) => {
           await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));
           return sendJson(res, 200, { ok: true });
         }
-        if (b.cmd === 'stop') { houseVideo = null; killTvSessions(null); }
+        if (b.cmd === 'stop') { houseVideo = null; killTvSessions(null); killTsSessions(null); }
         let r = null;
         try {
           r = await house.command(pls, b.cmd, b.value);
@@ -719,6 +783,7 @@ setInterval(updateYtdlp, 24 * 3600 * 1000);
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     killTvSessions(null);
+    killTsSessions(null);
     server.close();
     process.exit(0);
   });

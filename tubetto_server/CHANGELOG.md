@@ -1,3 +1,10 @@
+# 1.5.2
+- 📺 TV collegate in DLNA (es. Sony "TV Studio", senza Google Cast): non aprono l'HLS. Ora ricevono un MP4 normale
+  quando YouTube dà lo stream unico, altrimenti un flusso MPEG-TS continuo (H.264+AAC) come la TV digitale.
+  Anche il badge della musica (copertina + titolo) arriva così. Le TV Google Cast continuano con l'HLS.
+- Brani "lunghezza sconosciuta": la lunghezza si legge dal link di YouTube (clen), molti brani tornano a partire.
+- Copertina sulla TV: se l'audio del brano non si apre, si usa l'audio del video.
+
 # 1.5.1
 - Video nero nel browser: YouTube rifiutava il link diretto dopo che Tubetto Server aveva già risposto (0 byte).
   Ora il primo pezzo si controlla prima; se è rifiutato si passa a video e audio separati uniti da ffmpeg.
