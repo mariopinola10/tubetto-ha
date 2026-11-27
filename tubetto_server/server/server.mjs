@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -279,9 +279,18 @@ async function runOp(op, params) {
   return d;
 }
 
+/** Nome leggibile nell'URL: Music Assistant lo mostra come titolo (niente "%20"). */
+function urlName(it) {
+  const name = `${it.author ? it.author + ' - ' : ''}${it.title || it.id}`.replace(/[\\/?#%"<>|:*&+=]+/g, ' ').trim().slice(0, 90) || it.id;
+  return encodeURIComponent(name.replace(/\s+/g, '_')).replace(/%E2%80%93/g, '-');
+}
+
 function streamUrl(it) {
-  const name = `${it.author ? it.author + ' - ' : ''}${it.title || it.id}`.replace(/[\\/?#%"<>|:*]+/g, ' ').trim().slice(0, 90) || it.id;
-  return `${STREAM_BASE}/stream/${it.id}/${encodeURIComponent(name)}.m4a?k=${sign(it.id)}`;
+  return `${STREAM_BASE}/stream/${it.id}/${urlName(it)}.m4a?k=${sign(it.id)}`;
+}
+
+function videoUrl(it) {
+  return `${STREAM_BASE}/video/${it.id}/${urlName(it)}.mp4?k=${sign(it.id)}`;
 }
 
 // ------------------------------------------------------------------ server
@@ -354,6 +363,16 @@ const server = http.createServer(async (req, res) => {
           log('[casa]', playersR.join(', '), '← radio', radioIt.title);
           return sendJson(res, 200, { ok: true, count: 1, items: [radioIt], ...rr });
         }
+        // film di Internet Archive verso una TV
+        const film = (b.items || []).find((x) => x && String(x.id || '').startsWith('film:') && /^https:\/\/archive\.org\//.test(x.url || ''));
+        if (film) {
+          const vmap = b.video || {};
+          const tv = (b.players || []).filter((p) => vmap[p]);
+          if (!tv.length) return sendJson(res, 400, { error: 'Scegli una TV (📺) per guardare il film in casa' });
+          for (const p of tv) await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || '');
+          houseIds = [];
+          return sendJson(res, 200, { ok: true, count: 1, items: [film], video: true });
+        }
         let items = (b.items || []).filter((x) => x && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, 80);
         if (!items.length) return sendJson(res, 400, { error: 'Coda vuota' });
         // coda corta: aggiungo brani simili, come la radio dell'app
@@ -365,6 +384,21 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
+        // Video verso una TV: si manda il video (Cast) alle stanze che lo supportano, l'audio alle altre
+        if (b.music === false) {
+          const vmap = b.video || {};
+          const tv = players.filter((p) => vmap[p]);
+          if (tv.length) {
+            const it0 = items[0];
+            const thumb = `https://i.ytimg.com/vi/${it0.id}/hqdefault.jpg`;
+            for (const p of tv) await house.playVideo(vmap[p], videoUrl(it0), it0.title || '', thumb);
+            const rest = players.filter((p) => !vmap[p]);
+            if (rest.length) await house.play(rest, [streamUrl(it0)]);
+            log('[casa] video', it0.id, '→', tv.map((p) => vmap[p]).join(', '));
+            houseIds = [it0.id];
+            return sendJson(res, 200, { ok: true, count: 1, items: [it0], video: true });
+          }
+        }
         houseIds = items.map((x) => x.id);
         prefetch(houseIds[0]);
         const r = await house.play(players, items.map(streamUrl));

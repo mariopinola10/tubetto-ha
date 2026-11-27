@@ -33,16 +33,43 @@ export async function players() {
   const states = await ha('GET', '/states');
   const all = states.filter((s) => s.entity_id.startsWith('media_player.'));
   const list = ids.length ? all.filter((s) => ids.includes(s.entity_id)) : all;
+  const nameOf = (s) => (s.attributes && s.attributes.friendly_name) || s.entity_id;
+  const norm = (n) => String(n).toLowerCase().replace(/[♪()]/g, '').replace(/\s+/g, ' ').trim();
+  // TV/Chromecast fuori da Music Assistant (stesso nome): servono per mostrare anche il VIDEO
+  const videoCapable = all.filter((s) => !ids.includes(s.entity_id) && ((s.attributes && s.attributes.device_class) === 'tv' || /cast|bravia|tv|chromecast|sony|samsung|philips|\blg\b|kd-|aftss|fire/i.test(s.entity_id + ' ' + nameOf(s))));
+  // un solo elemento per stanza: lo stesso dispositivo può comparire più volte (Cast, DLNA, AirPlay…)
+  const byName = new Map();
+  for (const s of list) {
+    const k = norm(nameOf(s));
+    const cur = byName.get(k);
+    const score = (x) => (x.state === 'playing' ? 3 : 0) + (x.state !== 'unavailable' ? 2 : 0) + (/airplay|dlna|upnp/i.test(x.entity_id) ? 0 : 1);
+    if (!cur || score(s) > score(cur)) byName.set(k, s);
+  }
   return {
     musicAssistant: ids.length > 0,
-    players: list.map((s) => ({
-      id: s.entity_id,
-      name: (s.attributes && s.attributes.friendly_name) || s.entity_id,
-      state: s.state,
-      volume: s.attributes && s.attributes.volume_level,
-      group: (s.attributes && s.attributes.group_members) || [],
-    })).sort((a, b) => a.name.localeCompare(b.name)),
+    players: [...byName.values()].map((s) => {
+      const k = norm(nameOf(s));
+      const v = videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
+      return {
+        id: s.entity_id,
+        name: nameOf(s).replace(/\s*♪\s*$/, ''),
+        state: s.state,
+        volume: s.attributes && s.attributes.volume_level,
+        group: (s.attributes && s.attributes.group_members) || [],
+        video: v ? v.entity_id : null,
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name)),
   };
+}
+
+/** Video sulla TV (Chromecast/Cast di Home Assistant): Music Assistant porta solo l'audio. */
+export async function playVideo(entity, url, title, thumb) {
+  await service('media_player', 'play_media', {
+    entity_id: entity,
+    media_content_id: url,
+    media_content_type: 'video/mp4',
+    extra: { metadata: { metadataType: 0, title, images: thumb ? [{ url: thumb }] : [] } },
+  });
 }
 
 /**

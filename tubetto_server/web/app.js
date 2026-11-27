@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -768,7 +768,9 @@ function filmShelves() {
 }
 
 async function playFilm(v) {
-  if (isHouse()) return toast('I film si guardano su questo dispositivo: scegli 🎧 "Questo dispositivo" come uscita', 5000);
+  if (isHouse() && !pl.players.some((id) => (housePlayers.find((p) => p.id === id) || {}).video)) {
+    return toast('Per il film in casa scegli una TV (📺) tra le uscite, oppure 🎧 "Questo dispositivo"', 5000);
+  }
   try {
     toast('🎬 Apro «' + v.title + '»…');
     const d = await api('filmurl', { id: v.id }, 3600000);
@@ -1872,13 +1874,15 @@ setInterval(() => {
 // ---------------- "Suona in casa" (Music Assistant) ----------------
 
 async function houseSend() {
-  const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url }));
+  const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url, thumb: v.thumb }));
   if (!items.length) return;
   media().pause();
   setVideoPanelFor(true);
   updateNowPlaying();
   try {
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music });
+    const video = {};
+    for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));
@@ -1947,7 +1951,7 @@ async function showOutputMenu(x, y) {
     { label: (pl.target === 'local' ? '✓ ' : '　') + '🎧 Questo dispositivo', run: () => switchTarget('local') },
     '-',
     ...housePlayers.map((p) => ({
-      label: (sel.has(p.id) ? '☑ ' : '☐ ') + p.name + (p.state === 'playing' ? ' ♪' : ''),
+      label: (sel.has(p.id) ? '☑ ' : '☐ ') + p.name + (p.video ? ' 📺' : '') + (p.state === 'playing' ? ' ♪' : ''),
       run: () => {
         if (sel.has(p.id)) sel.delete(p.id); else sel.add(p.id);
         pl.players = [...sel];
@@ -2152,6 +2156,8 @@ async function start() {
   bind();
   initMedia();
   refreshOutputButton();
+  // stanze (servono per sapere quali TV possono mostrare il video)
+  api('house/players').then((d) => { housePlayers = d.players || []; }).catch(() => null);
   try {
     const sc = await api('config');
     if (sc.repo && !LS.get('cfg', {}).repoSet) cfg.repo = sc.repo;
