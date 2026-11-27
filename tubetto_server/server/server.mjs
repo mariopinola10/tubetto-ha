@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.3';
+const VERSION = '1.5.4';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -408,6 +408,7 @@ const tsSessions = new Map(); // sid → { it, mode, entity, at, ff }
 function tvTsUrlSession(it, mode, entity) {
   const sid = crypto.randomBytes(8).toString('hex');
   tsSessions.set(sid, { it, mode, entity, at: Date.now(), ff: null });
+  log('[tv] sessione', sid, mode, it.id, '→', entity);
   for (const [k, t] of tsSessions) if (Date.now() - t.at > 4 * 3600000) { try { t.ff && t.ff.kill('SIGKILL'); } catch (e) { /* */ } tsSessions.delete(k); }
   return sid;
 }
@@ -425,14 +426,17 @@ const DLNA_HEADERS = {
   'contentFeatures.dlna.org': 'DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000',
 };
 
-function serveTvTs(req, res, sid) {
+/** Flusso continuo per la TV: .ts per il DLNA, .mp4 (frammentato) per Google Cast. */
+function serveTvTs(req, res, sid, fmt = 'ts') {
   const t = tsSessions.get(sid);
   if (!t) return sendJson(res, 404, { error: 'Sessione finita' });
-  res.writeHead(200, { 'Content-Type': 'video/mpeg', 'Cache-Control': 'no-store', 'Accept-Ranges': 'none', 'Access-Control-Allow-Origin': '*', ...DLNA_HEADERS });
+  const mp4 = fmt === 'mp4';
+  res.writeHead(200, { 'Content-Type': mp4 ? 'video/mp4' : 'video/mpeg', 'Cache-Control': 'no-store', 'Accept-Ranges': 'none', 'Access-Control-Allow-Origin': '*', ...(mp4 ? {} : DLNA_HEADERS) });
   if (req.method === 'HEAD') return res.end();
   // la TV a volte riapre il flusso: chiudo quello vecchio
   try { t.ff && t.ff.kill('SIGKILL'); } catch (e) { /* */ }
-  const args = [...tvInputArgs(t.it, t.mode, path.join(HLS_DIR, 'ts-' + sid)), '-f', 'mpegts', '-mpegts_flags', 'resend_headers', 'pipe:1'];
+  const out = mp4 ? ['-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'] : ['-f', 'mpegts', '-mpegts_flags', 'resend_headers', 'pipe:1'];
+  const args = [...tvInputArgs(t.it, t.mode, path.join(HLS_DIR, 'ts-' + sid)), ...out];
   const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   t.ff = ff;
   let err = '';
@@ -440,7 +444,7 @@ function serveTvTs(req, res, sid) {
   ff.stdout.pipe(res);
   res.on('close', () => { try { ff.kill('SIGKILL'); } catch (e) { /* */ } });
   ff.on('close', (code) => {
-    if (code && !res.destroyed) log('[tv]', t.mode, t.it.id, 'flusso TS ffmpeg codice', code, err.trim().split('\n').pop());
+    if (code && !res.destroyed) log('[tv]', t.mode, t.it.id, 'flusso', fmt, 'ffmpeg codice', code, err.trim().split('\n').pop());
     res.end();
   });
 }
@@ -521,16 +525,14 @@ async function playHouseVideo(idx) {
     const ent = hv.vmap[p];
     let url = null, type = null;
     try {
-      if (house.isCast(ent)) {
-        // Google Cast: HLS
-        if (!hls) hls = await startTvHls(itx, mode, ents.filter((e) => house.isCast(e)).join(','));
-        url = hls; type = 'application/x-mpegURL';
-      } else {
-        // DLNA: MP4 con lunghezza se c'è lo stream unico, altrimenti flusso MPEG-TS continuo
-        if (mode === 'video') {
-          try { const src = await resolve(it.id, 'video', false); if (!src.hls) { url = await videoUrl(it); type = 'video/mp4'; } } catch (e) { /* uso il TS */ }
-        }
-        if (!url) { url = `${base}/tvts/${tvTsUrlSession(itx, mode, ent)}.ts`; type = 'video/mpeg'; }
+      if (mode === 'video') {
+        // stream unico di YouTube (MP4 normale con lunghezza): lo leggono sia Cast sia DLNA, e si può saltare
+        try { const src = await resolve(it.id, 'video', false); if (!src.hls) { url = await videoUrl(it); type = 'video/mp4'; } } catch (e) { /* flusso preparato */ }
+      }
+      if (!url) {
+        // Cast: MP4 continuo (come nel browser); DLNA: MPEG-TS continuo
+        const sid = tvTsUrlSession(itx, mode, ent);
+        if (house.isCast(ent)) { url = `${base}/tvmp4/${sid}.mp4`; type = 'video/mp4'; } else { url = `${base}/tvts/${sid}.ts`; type = 'video/mpeg'; }
       }
       log('[tv]', mode, it.id, '→', ent, house.isCast(ent) ? '(Cast)' : '(DLNA)', type, url);
       await house.playVideo(ent, url, title, thumb, type);
@@ -638,8 +640,8 @@ const server = http.createServer(async (req, res) => {
     // HLS preparato per le TV (link con codice casuale, valido finché dura la riproduzione)
     const hm = /^\/hls\/([0-9a-f]{16})\/([^/]+)$/.exec(p);
     if (hm) return serveHls(req, res, hm[1], hm[2]);
-    const tm = /^\/tvts\/([0-9a-f]{16})\.ts$/.exec(p);
-    if (tm) return serveTvTs(req, res, tm[1]);
+    const tm = /^\/(tvts|tvmp4)\/([0-9a-f]{16})\.(ts|mp4)$/.exec(p);
+    if (tm) return serveTvTs(req, res, tm[2], tm[3]);
 
     // Radio web (dal pannello o con chiave)
     if (p === '/radiostream') {

@@ -1,3 +1,10 @@
+# 1.5.4
+- 📺 Google Cast: niente più HLS (la TV partiva dal "bordo" del flusso, si fermava e chiudeva il video).
+  Ora riceve l'MP4 di YouTube (con lunghezza, si può saltare) o, se non c'è, un MP4 continuo come nel browser;
+  la musica arriva come MP4 continuo con copertina e titolo. Il DLNA resta con il flusso .ts.
+- "Failed to execute quick play": se la TV è ancora occupata dal flusso precedente, si riprova dopo 2,5 secondi.
+- Browser: il riquadro del video si sposta trascinandolo dalla barra del titolo (doppio clic = torna al suo posto).
+
 # 1.5.3
 - Video neri e muti (browser e TV): i link video dei client diretti di YouTube si interrompevano dopo il primo pezzo.
   Per i video ora si usa prima yt-dlp con PO token (link stabili), poi i client diretti. La risposta di yt-dlp

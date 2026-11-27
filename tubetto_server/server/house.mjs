@@ -170,12 +170,20 @@ export async function stopDirect(entities) {
 
 /** Video (o audio) direttamente sulla TV (Chromecast/Cast di Home Assistant): Music Assistant porta solo l'audio. */
 export async function playVideo(entity, url, title, thumb, type = 'video/mp4') {
+  const send = async () => {
   await service('media_player', 'play_media', {
     entity_id: entity,
     media_content_id: url,
     media_content_type: type,
     extra: { metadata: { metadataType: type.startsWith('audio') ? 3 : 0, title, images: thumb ? [{ url: thumb }] : [] } },
   });
+  };
+  try { await send(); } catch (e) {
+    // la TV era ancora occupata dal flusso di prima: riprovo una volta
+    if (!/quick play|timed out|timeout/i.test(e.message)) throw e;
+    await new Promise((ok) => setTimeout(ok, 2500));
+    await send();
+  }
 }
 
 /**

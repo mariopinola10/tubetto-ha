@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.3';
+const APP_VERSION = '1.5.4';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -2184,7 +2184,44 @@ function bind() {
     vp.classList.remove('big');
     if (pl.music) LS.set('hideVideoForMusic', true);
   });
-  $('#vpSize').addEventListener('click', () => vp.classList.toggle('big'));
+  $('#vpSize').addEventListener('click', () => { vp.classList.toggle('big'); keepPanelInside(); });
+  // il riquadro del video si sposta trascinandolo dalla barra del titolo
+  (() => {
+    const head = vp.querySelector('.vp-head');
+    let sx = 0, sy = 0, sl = 0, st = 0, on = false;
+    const pos = LS.get('vpPos', null);
+    if (pos) { vp.style.left = pos.x + 'px'; vp.style.top = pos.y + 'px'; vp.style.right = 'auto'; vp.style.bottom = 'auto'; }
+    head.style.cursor = 'move';
+    head.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) return;
+      const r = vp.getBoundingClientRect();
+      on = true; sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
+      head.setPointerCapture(e.pointerId);
+      vp.style.transition = 'none';
+    });
+    head.addEventListener('pointermove', (e) => {
+      if (!on) return;
+      vp.style.left = Math.max(0, Math.min(window.innerWidth - 120, sl + e.clientX - sx)) + 'px';
+      vp.style.top = Math.max(0, Math.min(window.innerHeight - 60, st + e.clientY - sy)) + 'px';
+      vp.style.right = 'auto'; vp.style.bottom = 'auto';
+    });
+    const end = () => {
+      if (!on) return;
+      on = false; vp.style.transition = '';
+      const r = vp.getBoundingClientRect();
+      LS.set('vpPos', { x: Math.round(r.left), y: Math.round(r.top) });
+    };
+    head.addEventListener('pointerup', end);
+    head.addEventListener('pointercancel', end);
+    head.addEventListener('dblclick', () => { LS.set('vpPos', null); vp.style.left = vp.style.top = vp.style.right = vp.style.bottom = ''; });
+    window.addEventListener('resize', keepPanelInside);
+  })();
+  function keepPanelInside() {
+    if (!vp.style.left) return;
+    const r = vp.getBoundingClientRect();
+    if (r.right > window.innerWidth) vp.style.left = Math.max(0, window.innerWidth - r.width - 8) + 'px';
+    if (r.bottom > window.innerHeight) vp.style.top = Math.max(0, window.innerHeight - r.height - 8) + 'px';
+  }
 
   $('#pbShare').addEventListener('click', () => shareItem(currentItem()));
   $('#pbLyrics').addEventListener('click', showLyrics);
