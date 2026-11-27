@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.5.6';
+const VERSION = '1.5.7';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -495,6 +495,8 @@ function serveHls(req, res, sid, file) {
 
 // video in corso sulle TV: coda per avanti/indietro e passaggio automatico al successivo
 let houseVideo = null;
+let housePlayChain = Promise.resolve();
+let housePlaySeq = 0;
 
 async function playHouseVideo(idx) {
   const hv = houseVideo;
@@ -527,7 +529,11 @@ async function playHouseVideo(idx) {
     let done = false, lastErr = null;
     for (const ent of cands) {
       let url = null, type = null;
-      if (mode === 'video') {
+      if (mode === 'video' && hv.youtubeApp && house.isCast(ent)) {
+        // TV Google Cast: apro il video nell'app YouTube della TV (come dal telefono). Niente flussi dal server.
+        url = JSON.stringify({ app_name: 'youtube', media_id: it.id }); type = 'cast';
+      }
+      if (!url && mode === 'video') {
         // stream unico di YouTube (MP4 normale con lunghezza): lo leggono sia Cast sia DLNA, e si può saltare
         try { const src = await resolve(it.id, 'video', false); if (!src.hls) { url = await videoUrl(it); type = 'video/mp4'; } } catch (e) { /* flusso preparato */ }
       }
@@ -603,10 +609,10 @@ async function houseRadio(players, radioIt, video) {
   return rest.length ? await house.play(rest, [radioIt.url]) : { grouped: false };
 }
 
-async function houseItems(players, items, music, tvVideo, video) {
+async function houseItems(players, items, music, tvVideo, video, youtubeApp = true) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
   if (tv.length) {
-    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo };
+    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo, youtubeApp };
     await playHouseVideo(0);
     return { video: true };
   }
@@ -713,6 +719,14 @@ const server = http.createServer(async (req, res) => {
       }
       if (op === 'house/play' && req.method === 'POST') {
         const b = await readBody(req);
+        // un invio alla volta: più clic di fila non devono aprire più flussi sulla stessa TV
+        const myTurn = ++housePlaySeq;
+        const prev = housePlayChain;
+        let release;
+        housePlayChain = new Promise((ok) => { release = ok; });
+        await prev;
+        res.on('close', () => release());
+        if (myTurn !== housePlaySeq) { release(); return sendJson(res, 200, { ok: true, skipped: true, items: b.items || [], count: 0 }); }
         // radio web: Music Assistant apre direttamente lo stream della stazione
         const radioIt = (b.items || []).find((x) => x && String(x.id || '').startsWith('radio:') && /^https?:\/\//.test(x.url || ''));
         if (radioIt) {
@@ -744,7 +758,7 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
-        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvVideo, b.video || {}));
+        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvVideo, b.video || {}, b.youtubeApp !== false));
         return sendJson(res, 200, { ok: true, count: items.length, items, ...r });
       }
       if (op === 'house/cmd' && req.method === 'POST') {

@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.5.6';
+const APP_VERSION = '1.5.7';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1408,6 +1408,7 @@ function openSettings() {
     <button class="secondary" id="sProfile" style="margin-top:8px">👤 Profilo e gusti musicali${profile.name ? ' (' + esc(profile.name) + ')' : ''}</button>
     <button class="secondary" id="sAccount" style="margin-top:8px">🔐 Accesso YouTube (facoltativo)</button>
     <button class="secondary" id="sHistory" style="margin-top:8px">🗑 Cronologia: vedi o cancella</button>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="sTvOwn" ${LS.get('tvOwnStream', false) ? 'checked' : ''}> 📺 Video sulle TV Google Cast tramite Tubetto Server (senza pubblicità, meno stabile) invece dell'app YouTube della TV</label>
     <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="sTvVideo" ${LS.get('tvVideo2', false) ? 'checked' : ''}> 📺 Musica sulla TV: mostra il video di YouTube invece della copertina</label>
     <label>Repository GitHub (utente/repo)</label>
     <input type="text" id="sRepo" value="${esc(cfg.repo)}">
@@ -1422,6 +1423,7 @@ function openSettings() {
     <div class="hint" style="margin-top:14px">Tubetto Server ${APP_VERSION} • Spazio = play/pausa, N = successivo, P = precedente, L = mi piace</div>`;
   $('#modal').classList.remove('hidden');
   $('#sTvVideo').addEventListener('change', (e) => LS.set('tvVideo2', e.target.checked));
+  $('#sTvOwn').addEventListener('change', (e) => LS.set('tvOwnStream', e.target.checked));
   api('status').then((st) => {
     const s = st.stream || {};
     $('#testResult').textContent = [
@@ -1961,6 +1963,12 @@ setInterval(() => {
 // ---------------- "Suona in casa" (Music Assistant) ----------------
 
 async function houseSend() {
+  if (houseSend.busy && Date.now() - houseSend.busy < 4000) return toast('Sto già inviando alla casa…');
+  houseSend.busy = Date.now();
+  try { return await houseSendNow(); } finally { houseSend.busy = 0; }
+}
+
+async function houseSendNow() {
   const items = pl.queue.slice(pl.idx, pl.idx + 60).map((v) => ({ id: v.id, title: v.title, author: v.author, url: v.url, thumb: v.thumb }));
   if (!items.length) return;
   if (bothLocal()) playLocal(); else { media().pause(); setVideoPanelFor(true); }
@@ -1968,7 +1976,7 @@ async function houseSend() {
   try {
     const video = {};
     for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false) || !!pl.tvVideoNow });
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo2', false) || !!pl.tvVideoNow, youtubeApp: !LS.get('tvOwnStream', false) });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));

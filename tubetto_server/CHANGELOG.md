@@ -1,3 +1,10 @@
+# 1.5.7
+- 📺 TV Google Cast: i video si aprono nell'app YouTube della TV (come trasmettere dal telefono). Niente flussi dal
+  server: leggero, si può saltare, qualità piena. Per avere il video senza pubblicità tramite Tubetto Server:
+  Impostazioni → "Video sulle TV Google Cast tramite Tubetto Server".
+- Per la TV si prova sempre prima l'entità Google Cast, poi il DLNA.
+- Un invio alla volta: più clic di fila non aprono più flussi sulla stessa TV (errore DLNA "SetAVTransportURI failed").
+
 # 1.5.6
 - "Dashboard displays only accept the media content type dashboard": se l'entità scelta per la TV rifiuta il video,
   Tubetto Server prova da solo le altre entità della stessa TV (prima Google Cast, poi DLNA) e ricorda quale

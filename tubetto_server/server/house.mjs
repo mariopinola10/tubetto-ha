@@ -145,7 +145,9 @@ export async function videoCandidates(player, chosen) {
   const names = new Set([nm(player), nm(chosen)].filter(Boolean));
   const list = [...urlOk].filter((e) => e !== chosen && !noUrl.has(e) && (roots.has(root(e)) || names.has(nm(e))) && (byId.get(e) || {}).state !== 'unavailable')
     .sort((a, b) => (castIds.has(b) ? 1 : 0) - (castIds.has(a) ? 1 : 0));
-  return [chosen, ...list].filter((e) => e && !noUrl.has(e));
+  // Google Cast prima di tutto (anche se la scelta era il DLNA)
+  const all = [chosen, ...list].filter((e) => e && !noUrl.has(e));
+  return [...all.filter((e) => castIds.has(e)), ...all.filter((e) => !castIds.has(e))];
 }
 
 /** Entità che riproducono un link: Google Cast per prime, poi DLNA. */
@@ -192,12 +194,9 @@ export async function stopDirect(entities) {
 /** Video (o audio) direttamente sulla TV (Chromecast/Cast di Home Assistant): Music Assistant porta solo l'audio. */
 export async function playVideo(entity, url, title, thumb, type = 'video/mp4') {
   const send = async () => {
-  await service('media_player', 'play_media', {
-    entity_id: entity,
-    media_content_id: url,
-    media_content_type: type,
-    extra: { metadata: { metadataType: type.startsWith('audio') ? 3 : 0, title, images: thumb ? [{ url: thumb }] : [] } },
-  });
+    const data = { entity_id: entity, media_content_id: url, media_content_type: type };
+    if (type !== 'cast') data.extra = { metadata: { metadataType: type.startsWith('audio') ? 3 : 0, title, images: thumb ? [{ url: thumb }] : [] } };
+    await service('media_player', 'play_media', data);
   };
   try { await send(); } catch (e) {
     // la TV era ancora occupata dal flusso di prima: riprovo una volta
