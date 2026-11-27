@@ -1,5 +1,5 @@
 name: Tubetto Server
-version: "1.4.1"
+version: "1.4.2"
 slug: tubetto
 description: YouTube e YouTube Music in tutta la casa, senza pubblicità, con Music Assistant
 url: https://github.com/mariopinola10/tubetto-ha
@@ -14,12 +14,13 @@ ingress_port: 8099
 panel_icon: mdi:jellyfish
 panel_title: Tubetto
 homeassistant_api: true
+hassio_api: true
 map:
   - share:rw
 ports:
-  8099/tcp: null
+  8099/tcp: 8099
 ports_description:
-  8099/tcp: "Facoltativa, accesso diretto dalla rete di casa con chiave (di solito non serve)"
+  8099/tcp: "Serve per mandare i VIDEO alle TV (Cast) e per l'accesso diretto con chiave"
 options:
   github_repo: mariopinola10/Tubetto
   github_token: ""

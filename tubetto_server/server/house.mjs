@@ -23,6 +23,52 @@ function service(domain, name, data) {
   return ha('POST', `/services/${domain}/${name}`, data);
 }
 
+async function supervisor(path) {
+  const r = await fetch('http://supervisor' + path, { headers: { Authorization: 'Bearer ' + process.env.SUPERVISOR_TOKEN }, signal: AbortSignal.timeout(10000) });
+  if (!r.ok) throw new Error('Supervisor ' + path + ': HTTP ' + r.status);
+  const j = await r.json();
+  return j.data || j;
+}
+
+/**
+ * Indirizzo raggiungibile dalla TV: la TV non conosce il nome interno del container
+ * (che va bene solo per Music Assistant), serve IP di casa + porta pubblicata dell'add-on.
+ */
+let lanCache = null;
+export async function lanBase(port) {
+  if (lanCache && Date.now() - lanCache.t < 10 * 60 * 1000) return lanCache.v;
+  let hostPort = null;
+  try {
+    const info = await supervisor('/addons/self/info');
+    hostPort = info.network && info.network[port + '/tcp'];
+  } catch (e) { /* senza hassio_api */ }
+  if (!hostPort) throw new Error(`La TV non raggiunge il video: in Home Assistant apri Impostazioni → Componenti aggiuntivi → Tubetto Server → Configurazione → Rete, scrivi ${port} nella porta e riavvia l'add-on`);
+  let ip = null;
+  try {
+    const net = await supervisor('/network/info');
+    const ifs = (net.interfaces || []).filter((i) => i.enabled !== false && i.ipv4 && (i.ipv4.address || []).length);
+    const pick = ifs.find((i) => i.primary) || ifs[0];
+    if (pick) ip = String(pick.ipv4.address[0]).split('/')[0];
+  } catch (e) { /* ripiego sotto */ }
+  if (!ip) {
+    try {
+      const c = await ha('GET', '/config');
+      if (c.internal_url) ip = new URL(c.internal_url).hostname;
+    } catch (e) { /* niente */ }
+  }
+  if (!ip) throw new Error("Non trovo l'indirizzo di casa di Home Assistant: imposta stream_base_url nella configurazione dell'add-on (es. http://192.168.1.10:" + port + ')');
+  const v = `http://${ip}:${hostPort}`;
+  lanCache = { t: Date.now(), v };
+  return v;
+}
+
+// stanza → TV che sta mostrando il video (i comandi vanno alla TV, non a Music Assistant)
+const videoRoute = new Map();
+export function routeVideo(player, entity) { videoRoute.set(player, entity); }
+export function clearVideo(players) { for (const p of players) videoRoute.delete(p); }
+export function videoOf(player) { return videoRoute.get(player) || null; }
+const target = (p) => videoRoute.get(p) || p;
+
 /** Player di Music Assistant (se non trovati, tutti i media_player). */
 export async function players() {
   let ids = [];
@@ -78,6 +124,7 @@ export async function playVideo(entity, url, title, thumb) {
  */
 export async function play(players, urls) {
   if (!players.length || !urls.length) throw new Error('Niente da suonare');
+  clearVideo(players);
   const leader = players[0];
   if (players.length > 1) {
     try {
@@ -105,16 +152,17 @@ async function playOne(player, urls) {
 }
 
 export async function command(players, cmd, value) {
-  const leader = players[0];
+  const leader = players[0] && target(players[0]);
   if (!leader) throw new Error('Nessuna stanza scelta');
+  const all = players.map(target);
   switch (cmd) {
     case 'play': return service('media_player', 'media_play', { entity_id: leader });
     case 'pause': return service('media_player', 'media_pause', { entity_id: leader });
     case 'next': return service('media_player', 'media_next_track', { entity_id: leader });
     case 'previous': return service('media_player', 'media_previous_track', { entity_id: leader });
-    case 'stop': return service('media_player', 'media_stop', { entity_id: players });
+    case 'stop': return service('media_player', 'media_stop', { entity_id: all });
     case 'seek': return service('media_player', 'media_seek', { entity_id: leader, seek_position: Number(value) || 0 });
-    case 'volume': return service('media_player', 'volume_set', { entity_id: players, volume_level: Math.max(0, Math.min(1, Number(value))) });
+    case 'volume': return service('media_player', 'volume_set', { entity_id: all, volume_level: Math.max(0, Math.min(1, Number(value))) });
     case 'unjoin': return service('media_player', 'unjoin', { entity_id: players.slice(1) });
     default: throw new Error('Comando sconosciuto: ' + cmd);
   }
@@ -123,10 +171,11 @@ export async function command(players, cmd, value) {
 export async function state(players) {
   const leader = players[0];
   if (!leader) return null;
-  const s = await ha('GET', '/states/' + leader);
+  const s = await ha('GET', '/states/' + target(leader));
   const a = s.attributes || {};
-  const ids = JSON.stringify(a).match(/\/stream\/([A-Za-z0-9_-]{11})/);
+  const ids = JSON.stringify(a).match(/\/(?:stream|video)\/([A-Za-z0-9_-]{11})/);
   return {
+    video: !!videoRoute.get(leader),
     state: s.state,
     videoId: ids ? ids[1] : null,
     title: a.media_title || '',

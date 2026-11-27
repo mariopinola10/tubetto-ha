@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -289,8 +289,32 @@ function streamUrl(it) {
   return `${STREAM_BASE}/stream/${it.id}/${urlName(it)}.m4a?k=${sign(it.id)}`;
 }
 
-function videoUrl(it) {
-  return `${STREAM_BASE}/video/${it.id}/${urlName(it)}.mp4?k=${sign(it.id)}`;
+/** Link del video per la TV: deve essere un indirizzo della rete di casa (IP:porta), non il nome interno del container. */
+async function videoUrl(it) {
+  const base = (options.stream_base_url || '').trim().replace(/\/+$/, '') || await house.lanBase(PORT);
+  return `${base}/video/${it.id}/${urlName(it)}.mp4?k=${sign(it.id)}`;
+}
+
+// video in corso sulle TV: coda per avanti/indietro e passaggio automatico al successivo
+let houseVideo = null;
+
+async function playHouseVideo(idx) {
+  const hv = houseVideo;
+  if (!hv || idx < 0 || idx >= hv.items.length) throw new Error(idx < 0 ? 'Sei già al primo video' : 'Coda finita');
+  const it = hv.items[idx];
+  const u = await videoUrl(it);
+  for (const p of hv.tv) {
+    await house.playVideo(hv.vmap[p], u, it.title || '', `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`);
+    house.routeVideo(p, hv.vmap[p]);
+  }
+  if (hv.rest.length) await house.play(hv.rest, [streamUrl(it)]);
+  hv.idx = idx;
+  hv.seenPlaying = false;
+  hv.at = Date.now();
+  houseIds = [it.id];
+  prefetch(it.id);
+  if (hv.items[idx + 1]) prefetch(hv.items[idx + 1].id);
+  log('[casa] video', it.id, '→', hv.tv.map((p) => hv.vmap[p]).join(', '));
 }
 
 // ------------------------------------------------------------------ server
@@ -350,7 +374,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (op === 'house/players') return sendJson(res, 200, await house.players());
-      if (op === 'house/state') return sendJson(res, 200, await house.state((url.searchParams.get('players') || '').split(',').filter(Boolean)));
+      if (op === 'house/state') {
+        const pls = (url.searchParams.get('players') || '').split(',').filter(Boolean);
+        const st = await house.state(pls);
+        // video finito sulla TV: passo al successivo (come la coda di Music Assistant)
+        if (st && st.video && houseVideo && pls[0] === houseVideo.players[0]) {
+          if (st.state === 'playing') houseVideo.seenPlaying = true;
+          else if (houseVideo.seenPlaying && st.state === 'idle' && Date.now() - houseVideo.at > 15000 && houseVideo.idx + 1 < houseVideo.items.length) {
+            playHouseVideo(houseVideo.idx + 1).catch((e) => log('[casa] video successivo non riuscito:', e.message));
+          }
+          const cur = houseVideo.items[houseVideo.idx];
+          if (cur) { st.videoId = cur.id; if (!st.title) st.title = cur.title || ''; }
+        }
+        return sendJson(res, 200, st);
+      }
       if (op === 'house/play' && req.method === 'POST') {
         const b = await readBody(req);
         // radio web: Music Assistant apre direttamente lo stream della stazione
@@ -369,8 +406,9 @@ const server = http.createServer(async (req, res) => {
           const vmap = b.video || {};
           const tv = (b.players || []).filter((p) => vmap[p]);
           if (!tv.length) return sendJson(res, 400, { error: 'Scegli una TV (📺) per guardare il film in casa' });
-          for (const p of tv) await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || '');
+          for (const p of tv) { await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || ''); house.routeVideo(p, vmap[p]); }
           houseIds = [];
+          houseVideo = null;
           return sendJson(res, 200, { ok: true, count: 1, items: [film], video: true });
         }
         let items = (b.items || []).filter((x) => x && /^[A-Za-z0-9_-]{11}$/.test(x.id)).slice(0, 80);
@@ -389,16 +427,13 @@ const server = http.createServer(async (req, res) => {
           const vmap = b.video || {};
           const tv = players.filter((p) => vmap[p]);
           if (tv.length) {
-            const it0 = items[0];
-            const thumb = `https://i.ytimg.com/vi/${it0.id}/hqdefault.jpg`;
-            for (const p of tv) await house.playVideo(vmap[p], videoUrl(it0), it0.title || '', thumb);
-            const rest = players.filter((p) => !vmap[p]);
-            if (rest.length) await house.play(rest, [streamUrl(it0)]);
-            log('[casa] video', it0.id, '→', tv.map((p) => vmap[p]).join(', '));
-            houseIds = [it0.id];
-            return sendJson(res, 200, { ok: true, count: 1, items: [it0], video: true });
+            houseVideo = { players, tv, vmap, rest: players.filter((p) => !vmap[p]), items, idx: 0 };
+            await playHouseVideo(0);
+            return sendJson(res, 200, { ok: true, count: items.length, items, video: true });
           }
         }
+        houseVideo = null;
+        house.clearVideo(players);
         houseIds = items.map((x) => x.id);
         prefetch(houseIds[0]);
         const r = await house.play(players, items.map(streamUrl));
@@ -407,7 +442,21 @@ const server = http.createServer(async (req, res) => {
       }
       if (op === 'house/cmd' && req.method === 'POST') {
         const b = await readBody(req);
-        await house.command((b.players || []).filter(Boolean), b.cmd, b.value);
+        const pls = (b.players || []).filter(Boolean);
+        // video sulle TV: la TV non ha una coda, avanti/indietro li gestisco io
+        if (houseVideo && pls[0] && house.videoOf(pls[0]) && (b.cmd === 'next' || b.cmd === 'previous')) {
+          await playHouseVideo(houseVideo.idx + (b.cmd === 'next' ? 1 : -1));
+          return sendJson(res, 200, { ok: true });
+        }
+        try {
+          await house.command(pls, b.cmd, b.value);
+        } catch (e) {
+          // Music Assistant ha svuotato la coda (TV spenta, brano finito…): rimando la coda da dove eravamo
+          if (!/queue is empty/i.test(e.message)) throw e;
+          if (b.cmd === 'play' && houseVideo) await playHouseVideo(houseVideo.idx);
+          else if (b.cmd === 'play' && houseIds.length) await house.play(pls, houseIds.map((id) => streamUrl({ id })));
+          else if (b.cmd !== 'pause' && b.cmd !== 'stop') throw new Error('Niente in riproduzione su questa stanza: rimanda il brano');
+        }
         return sendJson(res, 200, { ok: true });
       }
 
