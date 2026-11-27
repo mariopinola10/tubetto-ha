@@ -80,7 +80,12 @@ export async function players() {
   const STOP = new Set(['di', 'del', 'dello', 'della', 'dei', 'degli', 'delle', 'da', 'il', 'lo', 'la', 'i', 'gli', 'le', 'the', 'of', 'in', 'airplay', 'cast', 'dlna']);
   const norm = (n) => String(n).toLowerCase().replace(/[♪()\[\]_\-]/g, ' ').split(/\s+/).filter((w) => w && !STOP.has(w)).join(' ');
   // TV/Chromecast fuori da Music Assistant (stesso nome): servono per mostrare anche il VIDEO
-  const videoCapable = all.filter((s) => !ids.includes(s.entity_id) && ((s.attributes && s.attributes.device_class) === 'tv' || /cast|bravia|tv|chromecast|sony|samsung|philips|\blg\b|kd-|aftss|fire/i.test(s.entity_id + ' ' + nameOf(s))));
+  // Solo entità che accettano un link video: Google Cast (e DLNA). L'integrazione Sony Bravia, Android TV, webOS…
+  // accettano solo "app" e "canale" e danno "Invalid media type".
+  const urlOk = await urlPlayers();
+  const looksTv = (s) => (s.attributes && s.attributes.device_class) === 'tv' || /cast|bravia|tv|chromecast|sony|samsung|philips|\blg\b|kd-|aftss|fire/i.test(s.entity_id + ' ' + nameOf(s));
+  const videoCapable = all.filter((s) => !ids.includes(s.entity_id) && !noUrl.has(s.entity_id) && (urlOk.size ? urlOk.has(s.entity_id) : looksTv(s)))
+    .sort((a, b) => (castIds.has(b.entity_id) ? 1 : 0) - (castIds.has(a.entity_id) ? 1 : 0));
   // un solo elemento per stanza: lo stesso dispositivo può comparire più volte (Cast, DLNA, AirPlay…)
   const byName = new Map();
   for (const s of list) {
@@ -116,6 +121,21 @@ export async function players() {
 
 // entità che Home Assistant ha rifiutato per music_assistant.play_media (es. la TV vista via Cast)
 export const notMa = new Set();
+// entità che non accettano link (es. Sony Bravia: solo app e canali)
+export const noUrl = new Set();
+let castIds = new Set();
+
+/** Entità che riproducono un link: Google Cast per prime, poi DLNA. */
+async function urlPlayers() {
+  try {
+    const t = await ha('POST', '/template', { template: "{{ (integration_entities('cast') | select('match', 'media_player\\\\.') | list) | tojson }}" });
+    castIds = new Set(typeof t === 'string' ? JSON.parse(t) : t);
+    const d = await ha('POST', '/template', { template: "{{ (integration_entities('dlna_dmr') | select('match', 'media_player\\\\.') | list) | tojson }}" }).catch(() => '[]');
+    const set = new Set([...castIds, ...(typeof d === 'string' ? JSON.parse(d) : d)]);
+    for (const e of noUrl) set.delete(e);
+    return set;
+  } catch (e) { return new Set(); }
+}
 
 /** Entità che sono player di Music Assistant (le altre, es. una TV Cast, si comandano direttamente). */
 export async function maSet() {

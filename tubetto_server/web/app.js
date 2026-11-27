@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.8';
+const APP_VERSION = '1.4.9';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1408,7 +1408,7 @@ function openSettings() {
     <button class="secondary" id="sProfile" style="margin-top:8px">👤 Profilo e gusti musicali${profile.name ? ' (' + esc(profile.name) + ')' : ''}</button>
     <button class="secondary" id="sAccount" style="margin-top:8px">🔐 Accesso YouTube (facoltativo)</button>
     <button class="secondary" id="sHistory" style="margin-top:8px">🗑 Cronologia: vedi o cancella</button>
-    <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="sTvVideo" ${LS.get('tvVideo', false) ? 'checked' : ''}> 📺 Musica sulla TV: mostra il video invece della copertina</label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="sTvVideo" ${LS.get('tvCover', false) ? 'checked' : ''}> 📺 Musica sulla TV: solo copertina, senza video</label>
     <label>Repository GitHub (utente/repo)</label>
     <input type="text" id="sRepo" value="${esc(cfg.repo)}">
     <label>Token GitHub (lo stesso dell'app)</label>
@@ -1421,7 +1421,7 @@ function openSettings() {
     </div>
     <div class="hint" style="margin-top:14px">Tubetto Server ${APP_VERSION} • Spazio = play/pausa, N = successivo, P = precedente, L = mi piace</div>`;
   $('#modal').classList.remove('hidden');
-  $('#sTvVideo').addEventListener('change', (e) => LS.set('tvVideo', e.target.checked));
+  $('#sTvVideo').addEventListener('change', (e) => LS.set('tvCover', e.target.checked));
   api('status').then((st) => {
     const s = st.stream || {};
     $('#testResult').textContent = [
@@ -1967,7 +1967,7 @@ async function houseSend() {
   try {
     const video = {};
     for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo', false) });
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvCover: !!LS.get('tvCover', false) });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));

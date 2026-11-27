@@ -1,3 +1,10 @@
+# 1.4.9
+- "Invalid media type audio/mp4 … Only app and channel are supported": per il video si usa solo la TV di Google Cast
+  (o DLNA), mai l'integrazione Sony Bravia/Android TV, che accetta solo app e canali. Se un'entità rifiuta il link,
+  viene esclusa e la stanza riceve comunque l'audio.
+- Sulla TV arriva sempre il video, anche per la musica; la copertina solo se il video non c'è o se lo scegli
+  nelle Impostazioni ("Musica sulla TV: solo copertina").
+
 # 1.4.8
 - "Video non disponibile, riproduco solo l'audio": quando YouTube non dà più lo stream unico audio+video,
   Tubetto Server prende video (H.264, fino a 480p) e audio separati e li unisce con ffmpeg. Vale per il browser e la TV.

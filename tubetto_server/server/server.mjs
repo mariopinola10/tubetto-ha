@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.8';
+const VERSION = '1.4.9';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -341,7 +341,7 @@ async function playHouseVideo(idx) {
   const it = hv.items[idx];
   // TV: video per i video; per la musica la copertina (o il video se scelto nelle impostazioni).
   // Se il video non è disponibile, arriva comunque l'audio con la copertina.
-  let audio = hv.music && !hv.tvVideo;
+  let audio = hv.music && hv.tvCover;
   if (!audio) {
     if (!(await videoPlayable(it.id))) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
   }
@@ -349,9 +349,22 @@ async function playHouseVideo(idx) {
   const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
   // fermo il trasferimento precedente sulle TV (video, brano o Music Assistant sulla stessa TV)
   await house.stopDirect(hv.tv.flatMap((p) => [hv.vmap[p], p !== hv.vmap[p] ? p : null]));
+  const fallback = [];
   for (const p of hv.tv) {
-    await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, audio ? 'audio/mp4' : 'video/mp4');
-    house.routeVideo(p, hv.vmap[p]);
+    try {
+      await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, audio ? 'audio/mp4' : 'video/mp4');
+      house.routeVideo(p, hv.vmap[p]);
+    } catch (e) {
+      // l'entità non accetta link (es. integrazione Sony Bravia): la escludo e la stanza riceve via Music Assistant
+      if (!/Invalid media type|does not support|not supported/i.test(e.message)) throw e;
+      house.noUrl.add(hv.vmap[p]);
+      log('[casa]', hv.vmap[p], 'non accetta link video:', e.message);
+      if (p !== hv.vmap[p]) fallback.push(p); else throw new Error(`${p} non può ricevere video né audio da un link: scegli la TV di Google Cast`);
+    }
+  }
+  if (fallback.length) {
+    hv.tv = hv.tv.filter((p) => !fallback.includes(p));
+    hv.rest = [...hv.rest, ...fallback];
   }
   if (hv.rest.length) await house.play(hv.rest, [streamUrl(it)]);
   hv.idx = idx;
@@ -392,10 +405,10 @@ async function houseRadio(players, radioIt, video) {
   return rest.length ? await house.play(rest, [radioIt.url]) : { grouped: false };
 }
 
-async function houseItems(players, items, music, tvVideo, video) {
+async function houseItems(players, items, music, tvCover, video) {
   const { vmap, tv, rest } = await splitPlayers(players, video);
   if (tv.length) {
-    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo };
+    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvCover };
     await playHouseVideo(0);
     return { video: true };
   }
@@ -520,7 +533,7 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
-        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvVideo, b.video || {}));
+        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvCover, b.video || {}));
         return sendJson(res, 200, { ok: true, count: items.length, items, ...r });
       }
       if (op === 'house/cmd' && req.method === 'POST') {
