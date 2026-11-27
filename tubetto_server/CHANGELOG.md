@@ -1,3 +1,10 @@
+# 1.4.6
+- Risolto di nuovo "does not support action music_assistant.play_media": i player di Music Assistant si riconoscono
+  anche dagli attributi; una stanza rifiutata da Music Assistant viene segnata e ritentata subito via Cast.
+- Le TV ricevono sempre direttamente (Cast): i video come video; la musica come copertina con titolo
+  (o come video, se scelto nelle Impostazioni). Se il video non è disponibile arriva l'audio con la copertina.
+- Menu delle uscite più semplice: Questo dispositivo, le stanze, Ferma la musica in casa, Suona nelle stanze scelte.
+
 # 1.4.5
 - Passando da un video all'altro (o da video a canzone) sulla TV, il trasferimento precedente viene fermato prima
   di mandare il nuovo: la TV non risulta più occupata.

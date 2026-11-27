@@ -15,7 +15,7 @@ import { resolve, applyConfig, getStats, setQuality, reportBroken, prefetch } fr
 import * as house from './house.mjs';
 import * as extras from './extras.mjs';
 
-const VERSION = '1.4.5';
+const VERSION = '1.4.6';
 const PORT = 8099; // 8095 è di Music Assistant
 const WEB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../web');
 const DATA = fs.existsSync('/data') ? '/data' : path.resolve('./data');
@@ -304,11 +304,18 @@ async function playHouseVideo(idx) {
   const hv = houseVideo;
   if (!hv || idx < 0 || idx >= hv.items.length) throw new Error(idx < 0 ? 'Sei già al primo video' : 'Coda finita');
   const it = hv.items[idx];
-  const u = await videoUrl(it, hv.audioOnly);
+  // TV: video per i video; per la musica la copertina (o il video se scelto nelle impostazioni).
+  // Se il video non è disponibile, arriva comunque l'audio con la copertina.
+  let audio = hv.music && !hv.tvVideo;
+  if (!audio) {
+    try { await resolve(it.id, 'video', false); } catch (e) { audio = true; log('[casa] video non disponibile per', it.id, ': mando audio e copertina'); }
+  }
+  const u = await videoUrl(it, audio);
+  const thumb = `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`;
   // fermo il trasferimento precedente sulle TV (video, brano o Music Assistant sulla stessa TV)
   await house.stopDirect(hv.tv.flatMap((p) => [hv.vmap[p], p !== hv.vmap[p] ? p : null]));
   for (const p of hv.tv) {
-    await house.playVideo(hv.vmap[p], u, it.title || '', `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`, hv.audioOnly ? 'audio/mp4' : 'video/mp4');
+    await house.playVideo(hv.vmap[p], u, [it.author, it.title].filter(Boolean).join(' - ') || it.id, thumb, audio ? 'audio/mp4' : 'video/mp4');
     house.routeVideo(p, hv.vmap[p]);
   }
   if (hv.rest.length) await house.play(hv.rest, [streamUrl(it)]);
@@ -318,7 +325,60 @@ async function playHouseVideo(idx) {
   houseIds = [it.id];
   prefetch(it.id);
   if (hv.items[idx + 1]) prefetch(hv.items[idx + 1].id);
-  log('[casa] video', it.id, '→', hv.tv.map((p) => hv.vmap[p]).join(', '));
+  log('[casa]', audio ? 'audio' : 'video', it.id, '→', hv.tv.map((p) => hv.vmap[p]).join(', '));
+}
+
+/** Entità rifiutate da Music Assistant: le segno e da lì in poi passano via Cast. */
+function markNotMa(e) {
+  const m = /Entity (media_player\.[\w]+) does not support action music_assistant/.exec(e.message || '');
+  if (!m) return false;
+  house.notMa.add(m[1]);
+  log('[casa]', m[1], 'non è di Music Assistant: uso Cast');
+  return true;
+}
+
+/** Stanze → TV (Cast) e stanze di Music Assistant. Le TV ricevono sempre direttamente via Cast. */
+async function splitPlayers(players, video) {
+  const ma = await house.maSet();
+  const vmap = {};
+  for (const p of players) {
+    if (video && video[p]) vmap[p] = video[p];
+    else if (house.notMa.has(p) || (ma.size && !ma.has(p))) vmap[p] = p;
+  }
+  return { vmap, tv: players.filter((p) => vmap[p]), rest: players.filter((p) => !vmap[p]) };
+}
+
+async function houseRadio(players, radioIt, video) {
+  const { vmap, tv, rest } = await splitPlayers(players, video);
+  houseIds = [];
+  houseVideo = null;
+  await house.stopDirect(tv.flatMap((p) => [vmap[p], p]));
+  for (const p of tv) { await house.playVideo(vmap[p], radioIt.url, radioIt.title || '', radioIt.thumb || '', 'audio/mpeg'); house.routeVideo(p, vmap[p]); }
+  return rest.length ? await house.play(rest, [radioIt.url]) : { grouped: false };
+}
+
+async function houseItems(players, items, music, tvVideo, video) {
+  const { vmap, tv, rest } = await splitPlayers(players, video);
+  if (tv.length) {
+    houseVideo = { players, tv, vmap, rest, items, idx: 0, music, tvVideo };
+    await playHouseVideo(0);
+    return { video: true };
+  }
+  houseVideo = null;
+  house.clearVideo(players);
+  houseIds = items.map((x) => x.id);
+  prefetch(houseIds[0]);
+  const r = await house.play(players, items.map(streamUrl));
+  log('[casa]', players.join(', '), '←', items.length, 'brani');
+  return r;
+}
+
+/** Riprova una volta se Home Assistant rifiuta una stanza che non è di Music Assistant. */
+async function withMaRetry(fn) {
+  try { return await fn(); } catch (e) {
+    if (!markNotMa(e)) throw e;
+    return await fn();
+  }
 }
 
 // ------------------------------------------------------------------ server
@@ -398,14 +458,7 @@ const server = http.createServer(async (req, res) => {
         const radioIt = (b.items || []).find((x) => x && String(x.id || '').startsWith('radio:') && /^https?:\/\//.test(x.url || ''));
         if (radioIt) {
           const playersR = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
-          houseIds = [];
-          houseVideo = null;
-          const maR = await house.maSet();
-          const directR = maR.size ? playersR.filter((p) => !maR.has(p)) : [];
-          await house.stopDirect(directR);
-          for (const p of directR) await house.playVideo(p, radioIt.url, radioIt.title || '', radioIt.thumb || '', 'audio/mpeg');
-          const viaMa = playersR.filter((p) => !directR.includes(p));
-          const rr = viaMa.length ? await house.play(viaMa, [radioIt.url]) : { grouped: false };
+          const rr = await withMaRetry(() => houseRadio(playersR, radioIt, b.video || {}));
           extras.radioClick(String(radioIt.id).slice(6));
           log('[casa]', playersR.join(', '), '← radio', radioIt.title);
           return sendJson(res, 200, { ok: true, count: 1, items: [radioIt], ...rr });
@@ -413,8 +466,7 @@ const server = http.createServer(async (req, res) => {
         // film di Internet Archive verso una TV
         const film = (b.items || []).find((x) => x && String(x.id || '').startsWith('film:') && /^https:\/\/archive\.org\//.test(x.url || ''));
         if (film) {
-          const vmap = b.video || {};
-          const tv = (b.players || []).filter((p) => vmap[p]);
+          const { vmap, tv } = await splitPlayers((b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.')), b.video || {});
           if (!tv.length) return sendJson(res, 400, { error: 'Scegli una TV (📺) per guardare il film in casa' });
           await house.stopDirect(tv.flatMap((p) => [vmap[p], p]));
           for (const p of tv) { await house.playVideo(vmap[p], film.url, film.title || '', film.thumb || ''); house.routeVideo(p, vmap[p]); }
@@ -433,28 +485,7 @@ const server = http.createServer(async (req, res) => {
           } catch (e) { /* va bene così */ }
         }
         const players = (b.players || []).filter((x) => typeof x === 'string' && x.startsWith('media_player.'));
-        // Video verso una TV: si manda il video (Cast) alle stanze che lo supportano, l'audio alle altre
-        // stanze che non sono di Music Assistant (es. la TV scelta direttamente): si comandano con Cast
-        const ma = await house.maSet();
-        const direct = ma.size ? players.filter((p) => !ma.has(p)) : [];
-        const wantVideo = b.music === false || !!b.tvVideo;
-        if (wantVideo || direct.length) {
-          const vmap = {};
-          if (wantVideo) for (const [k, v] of Object.entries(b.video || {})) vmap[k] = v;
-          for (const p of direct) vmap[p] = vmap[p] || p;
-          const tv = players.filter((p) => vmap[p]);
-          if (tv.length) {
-            houseVideo = { players, tv, vmap, rest: players.filter((p) => !vmap[p]), items, idx: 0, audioOnly: !wantVideo };
-            await playHouseVideo(0);
-            return sendJson(res, 200, { ok: true, count: items.length, items, video: true });
-          }
-        }
-        houseVideo = null;
-        house.clearVideo(players);
-        houseIds = items.map((x) => x.id);
-        prefetch(houseIds[0]);
-        const r = await house.play(players, items.map(streamUrl));
-        log('[casa]', players.join(', '), '←', items.length, 'brani');
+        const r = await withMaRetry(() => houseItems(players, items, b.music !== false, !!b.tvVideo, b.video || {}));
         return sendJson(res, 200, { ok: true, count: items.length, items, ...r });
       }
       if (op === 'house/cmd' && req.method === 'POST') {

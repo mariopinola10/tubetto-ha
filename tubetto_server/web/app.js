@@ -1,7 +1,7 @@
 /* Tubetto Server (add-on Home Assistant) — interfaccia web senza pubblicità, stessa libreria dell'app. */
 'use strict';
 
-const APP_VERSION = '1.4.5';
+const APP_VERSION = '1.4.6';
 const SERVER_MODE = true;
 const SYNC_PATH = 'sync/tubetto-library.json';
 
@@ -1408,6 +1408,7 @@ function openSettings() {
     <button class="secondary" id="sProfile" style="margin-top:8px">👤 Profilo e gusti musicali${profile.name ? ' (' + esc(profile.name) + ')' : ''}</button>
     <button class="secondary" id="sAccount" style="margin-top:8px">🔐 Accesso YouTube (facoltativo)</button>
     <button class="secondary" id="sHistory" style="margin-top:8px">🗑 Cronologia: vedi o cancella</button>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="sTvVideo" ${LS.get('tvVideo', false) ? 'checked' : ''}> 📺 Musica sulla TV: mostra il video invece della copertina</label>
     <label>Repository GitHub (utente/repo)</label>
     <input type="text" id="sRepo" value="${esc(cfg.repo)}">
     <label>Token GitHub (lo stesso dell'app)</label>
@@ -1420,6 +1421,7 @@ function openSettings() {
     </div>
     <div class="hint" style="margin-top:14px">Tubetto Server ${APP_VERSION} • Spazio = play/pausa, N = successivo, P = precedente, L = mi piace</div>`;
   $('#modal').classList.remove('hidden');
+  $('#sTvVideo').addEventListener('change', (e) => LS.set('tvVideo', e.target.checked));
   api('status').then((st) => {
     const s = st.stream || {};
     $('#testResult').textContent = [
@@ -1458,7 +1460,7 @@ const pl = {
   target: LS.get('target', 'local'),          // 'local' = questo dispositivo, 'house' = Music Assistant
   players: LS.get('housePlayers', []),        // entity_id delle stanze scelte
   house: null,                                // ultimo stato letto da Home Assistant
-  alsoLocal: LS.get('alsoLocal', false),      // in casa E anche su questo dispositivo
+  alsoLocal: LS.get('alsoLocal', true),      // in casa E anche su questo dispositivo
 };
 
 const media = () => $('#media');
@@ -1960,7 +1962,7 @@ async function houseSend() {
   try {
     const video = {};
     for (const id of pl.players) { const hp = housePlayers.find((p) => p.id === id); if (hp && hp.video) video[id] = hp.video; }
-    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: LS.get('tvVideo', true) !== false });
+    const d = await postApi('house/play', { players: pl.players, items, music: pl.music, video, tvVideo: !!LS.get('tvVideo', false) });
     // la coda del server può essere stata allungata con brani simili
     const byId = new Map(pl.queue.map((v) => [v.id, v]));
     pl.queue = pl.queue.slice(0, pl.idx).concat(d.items.map((x) => byId.get(x.id) || x));
@@ -1975,6 +1977,7 @@ async function houseSend() {
 }
 
 async function houseCmd(cmd, value) {
+  if (!pl.players.length) return toast('Nessuna stanza scelta');
   try {
     await postApi('house/cmd', { players: pl.players, cmd, value });
     setTimeout(pollHouse, 700);
@@ -2026,19 +2029,20 @@ async function showOutputMenu(x, y) {
     housePlayers = [];
   }
   const sel = new Set(pl.players);
+  // Questo dispositivo e le stanze si possono scegliere insieme; si applica con "Suona nelle stanze scelte"
   const entries = [
     {
-      label: ((!isHouse() || pl.alsoLocal) ? '☑ ' : '☐ ') + '🎧 Questo dispositivo',
+      label: (pl.alsoLocal ? '☑ ' : '☐ ') + '🎧 Questo dispositivo',
       run: () => {
-        if (!isHouse()) { pl.alsoLocal = true; LS.set('alsoLocal', true); return switchTarget('local'); }
         pl.alsoLocal = !pl.alsoLocal;
         LS.set('alsoLocal', pl.alsoLocal);
-        refreshOutputButton();
-        if (pl.alsoLocal) {
-          const t = pl.house && pl.house.position ? pl.house.position + (pl.house.state === 'playing' && pl.house.positionAt ? (Date.now() - Date.parse(pl.house.positionAt)) / 1000 : 0) : 0;
-          if (currentItem()) playLocal(Math.max(0, Math.floor(t)));
-          toast('🎧 Anche su questo dispositivo');
-        } else { media().pause(); setVideoPanelFor(true); toast('Solo nelle stanze'); }
+        if (isHouse()) {
+          refreshOutputButton();
+          if (pl.alsoLocal) {
+            const t = pl.house && pl.house.position ? pl.house.position + (pl.house.state === 'playing' && pl.house.positionAt ? (Date.now() - Date.parse(pl.house.positionAt)) / 1000 : 0) : 0;
+            if (currentItem()) playLocal(Math.max(0, Math.floor(t)));
+          } else { media().pause(); setVideoPanelFor(true); }
+        }
         setTimeout(() => showOutputMenu(x, y), 0);
       },
     },
@@ -2052,19 +2056,17 @@ async function showOutputMenu(x, y) {
         setTimeout(() => showOutputMenu(x, y), 0);
       },
     })),
+    '-',
+    { label: '⏹ Ferma la musica in casa', run: () => houseCmd('stop') },
+    {
+      label: '🏠 Suona nelle stanze scelte',
+      run: () => {
+        if (!pl.players.length && !pl.alsoLocal) return toast('Scegli questo dispositivo o almeno una stanza');
+        if (!pl.players.length) return switchTarget('local');
+        switchTarget('house');
+      },
+    },
   ];
-  if (housePlayers.length) {
-    entries.push('-');
-    entries.push({ label: '🏠 Suona nelle stanze scelte' + (pl.alsoLocal ? ' + questo dispositivo' : ''), run: () => switchTarget('house') });
-    if (isHouse()) entries.push({ label: '🎧 Solo su questo dispositivo', run: () => switchTarget('local') });
-    if (housePlayers.some((p) => p.video)) {
-      const tvv = LS.get('tvVideo', true) !== false;
-      entries.push({ label: (tvv ? '☑ ' : '☐ ') + '📺 Sulle TV mostra il video (anche per la musica)', run: () => { LS.set('tvVideo', !tvv); toast(!tvv ? '📺 Sulle TV arriva il video' : '📺 Sulle TV arriva solo l\'audio'); if (isHouse() && currentItem()) houseSend(); } });
-    }
-    if (isHouse()) entries.push({ label: '⏹ Ferma la musica in casa', run: () => houseCmd('stop') });
-  } else {
-    entries.push({ label: 'Nessun player di Music Assistant trovato', run: () => null });
-  }
   showMenu(entries, x, y);
 }
 

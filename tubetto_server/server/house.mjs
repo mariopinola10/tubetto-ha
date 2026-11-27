@@ -71,11 +71,7 @@ const target = (p) => videoRoute.get(p) || p;
 
 /** Player di Music Assistant (se non trovati, tutti i media_player). */
 export async function players() {
-  let ids = [];
-  try {
-    const t = await ha('POST', '/template', { template: "{{ integration_entities('music_assistant') | select('match', 'media_player\\\\.') | list | tojson }}" });
-    ids = typeof t === 'string' ? JSON.parse(t) : t;
-  } catch (e) { ids = []; }
+  const ids = [...await maSet()];
   const states = await ha('GET', '/states');
   const all = states.filter((s) => s.entity_id.startsWith('media_player.'));
   const list = ids.length ? all.filter((s) => ids.includes(s.entity_id)) : all;
@@ -91,11 +87,19 @@ export async function players() {
     const score = (x) => (x.state === 'playing' ? 3 : 0) + (x.state !== 'unavailable' ? 2 : 0) + (/airplay|dlna|upnp/i.test(x.entity_id) ? 0 : 1);
     if (!cur || score(s) > score(cur)) byName.set(k, s);
   }
+  // TV senza un player di Music Assistant con lo stesso nome: compaiono da sole e ricevono via Cast
+  if (ids.length) {
+    for (const v of videoCapable) {
+      const k = norm(nameOf(v));
+      if (v.state === 'unavailable' || byName.has(k) || [...byName.keys()].some((n) => n.includes(k) || k.includes(n))) continue;
+      byName.set(k, v);
+    }
+  }
   return {
     musicAssistant: ids.length > 0,
     players: [...byName.values()].map((s) => {
       const k = norm(nameOf(s));
-      const v = videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
+      const v = !ids.includes(s.entity_id) && ids.length ? s : videoCapable.find((x) => norm(nameOf(x)) === k) || (/tv|bravia|sony|samsung|lg/i.test(nameOf(s)) ? videoCapable.find((x) => norm(nameOf(x)).includes(k) || k.includes(norm(nameOf(x)))) : null);
       return {
         id: s.entity_id,
         name: nameOf(s).replace(/\s*♪\s*$/, ''),
@@ -108,12 +112,25 @@ export async function players() {
   };
 }
 
+// entità che Home Assistant ha rifiutato per music_assistant.play_media (es. la TV vista via Cast)
+export const notMa = new Set();
+
 /** Entità che sono player di Music Assistant (le altre, es. una TV Cast, si comandano direttamente). */
 export async function maSet() {
+  const set = new Set();
   try {
     const t = await ha('POST', '/template', { template: "{{ integration_entities('music_assistant') | select('match', 'media_player\\\\.') | list | tojson }}" });
-    return new Set(typeof t === 'string' ? JSON.parse(t) : t);
-  } catch (e) { return new Set(); }
+    for (const id of (typeof t === 'string' ? JSON.parse(t) : t) || []) set.add(id);
+  } catch (e) { /* ripiego sugli attributi */ }
+  try {
+    const states = await ha('GET', '/states');
+    for (const st of states) {
+      const a = st.attributes || {};
+      if (st.entity_id.startsWith('media_player.') && (a.mass_player_type || a.mass_player_id || a.active_queue !== undefined)) set.add(st.entity_id);
+    }
+  } catch (e) { /* niente */ }
+  for (const id of notMa) set.delete(id);
+  return set;
 }
 
 /** Interrompe quello che la TV sta ricevendo (altrimenti il nuovo invio la trova occupata). */
@@ -130,7 +147,7 @@ export async function playVideo(entity, url, title, thumb, type = 'video/mp4') {
     entity_id: entity,
     media_content_id: url,
     media_content_type: type,
-    extra: { metadata: { metadataType: 0, title, images: thumb ? [{ url: thumb }] : [] } },
+    extra: { metadata: { metadataType: type.startsWith('audio') ? 3 : 0, title, images: thumb ? [{ url: thumb }] : [] } },
   });
 }
 
